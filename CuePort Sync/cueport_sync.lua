@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 2.5.3
+-- @version 2.6.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -14,6 +14,11 @@
 --   Usage: run from the Actions list, log in once, bind a production per .rpp,
 --   then "Kommentare synchronisieren" for subsequent updates.
 -- @changelog
+--   v2.6.0 - Production release: removed the preview-worker toggle, the
+--            [PREVIEW] badge and the dual token storage. The script now
+--            always talks to the public CuePort production API. On first
+--            run we migrate any existing prod/preview token to the new
+--            unified storage so users don't have to pair again.
 --   v2.5.3 - Sign fix: GetProjectTimeOffset returns a negative value after
 --            "Set 0:00 to cursor" (ruler = internal + offset). Markers are
 --            now placed at `timestamp - offset` so they land on the right
@@ -121,9 +126,8 @@
 --   v1.0.1 - Add ReaPack metadata header so the action registers automatically
 --   v1.0.0 - Initial release
 
-local VERSION = '2.5.3'
-local API_PROD    = 'https://melotunes-upload.m3lotunes.workers.dev'
-local API_PREVIEW = 'https://melotunes-preview.m3lotunes.workers.dev'
+local VERSION = '2.6.0'
+local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
 local COMMENTS_TRACK_NAME    = 'Artist Comments'
@@ -525,8 +529,7 @@ local state = {
   screen = 'init',  -- init, login, pairing, main, error
 
   -- API / auth
-  apiUrl = API_PROD,
-  isPreview = false,
+  apiUrl = API_URL,
   token = nil,
 
   -- Pairing
@@ -562,18 +565,24 @@ local state = {
 
 -- Load persisted state
 local function loadState()
-  -- API preview override
-  if getGlobalExt('use_preview') == '1' then
-    state.apiUrl = API_PREVIEW
-    state.isPreview = true
-  else
-    state.apiUrl = API_PROD
-    state.isPreview = false
-  end
+  state.apiUrl = API_URL
 
-  -- Token (per-host — prod and preview have separate tokens)
-  local tokenKey = state.isPreview and 'token_preview' or 'token_prod'
-  state.token = getGlobalExt(tokenKey)
+  -- One-time migration: older script versions stored the token under a
+  -- host-specific key (`token_prod` / `token_preview`). Migrate whichever
+  -- is present over to the canonical `token` key so users don't have to
+  -- re-pair after updating.
+  state.token = getGlobalExt('token')
+  if state.token == '' or state.token == nil then
+    local legacy = getGlobalExt('token_prod')
+    if legacy == '' or legacy == nil then legacy = getGlobalExt('token_preview') end
+    if legacy and legacy ~= '' then
+      setGlobalExt('token', legacy)
+      delGlobalExt('token_prod')
+      delGlobalExt('token_preview')
+      delGlobalExt('use_preview')
+      state.token = legacy
+    end
+  end
   if state.token == '' then state.token = nil end
 
   -- Project binding
@@ -581,14 +590,8 @@ local function loadState()
 end
 
 local function saveToken(tok)
-  local tokenKey = state.isPreview and 'token_preview' or 'token_prod'
-  if tok then setGlobalExt(tokenKey, tok) else delGlobalExt(tokenKey) end
+  if tok then setGlobalExt('token', tok) else delGlobalExt('token') end
   state.token = tok
-end
-
-local function setPreviewMode(enable)
-  setGlobalExt('use_preview', enable and '1' or '0')
-  loadState()
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -1444,10 +1447,6 @@ local function renderBrand()
   ImGui.PopStyleColor(ctx)
   ImGui.SameLine(ctx)
   ImGui.TextDisabled(ctx, 'Sync')
-  if state.isPreview then
-    ImGui.SameLine(ctx)
-    ImGui.TextColored(ctx, CP_COLORS.warn, '[PREVIEW]')
-  end
 
   -- Right-aligned: Settings + signed-in indicator (except on the Settings
   -- screen itself, where we show a Back link instead — handled in renderSettings).
@@ -1500,18 +1499,6 @@ local function renderSettings()
   ImGui.PopStyleColor(ctx)
   ImGui.SameLine(ctx)
   ImGui.Text(ctx, 'Settings')
-  ImGui.Separator(ctx)
-  ImGui.Dummy(ctx, 0, 4)
-
-  -- Preview worker
-  ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.accent)
-  ImGui.Text(ctx, 'API')
-  ImGui.PopStyleColor(ctx)
-  local changed, val = ImGui.Checkbox(ctx, 'Use preview worker', state.isPreview)
-  if changed then setPreviewMode(val) end
-  ImGui.TextDisabled(ctx, state.apiUrl)
-
-  ImGui.Dummy(ctx, 0, 10)
   ImGui.Separator(ctx)
   ImGui.Dummy(ctx, 0, 4)
 
