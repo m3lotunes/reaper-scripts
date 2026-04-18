@@ -34,28 +34,12 @@ Reaper integration for \cf2 CuePort\cf1 . Pulls top-level artist comments for th
 5. Click \b Sync comments\b0 . Done.\par
 \par
 \b Time alignment\b0\par
-Comments are placed relative to the start of the rendered audio. If your mix does not begin at 0:00 on the Reaper timeline, right-click the ruler, choose \b Change start time/measure \f8594 Set 0:00 to current edit cursor\b0  with the cursor at the render start, then press \b Sync comments\b0  again. Markers will line up.\par
+Comments are placed relative to the start of the rendered audio. Use the in-app Set-render-start button to align the ruler to your mix start.\par
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="2.6.0" author="CuePort" time="2026-04-18T19:30:00Z">
+      <version name="1.0.0" author="CuePort" time="2026-04-18T20:00:00Z">
         <changelog><![CDATA[
-v2.6.0 — Production release: removed the preview-worker toggle. The script
-        always talks to the CuePort production API now.
-v2.5.3 — Sign fix for the project time offset. Markers now land at the
-        correct ruler position when "Set render start" has been used.
-v2.5.2 — Use Reaper action 43345 to set the time offset (reliable on every
-        Reaper version; GetProjectStateChunk missing on some builds).
-v2.5.1 — Render-start button now writes PROJOFFS directly (no SWS needed,
-        but broken on builds that lack GetProjectStateChunk — see v2.5.2).
-v2.5.0 — One-click "Set render start at cursor" button + visible render-start
-        marker. Auto re-sync after the offset changes.
-v2.4.0 — Respect Reaper project start offset. Set "0:00 to current edit cursor"
-        at the render start, re-sync, and markers land on the right ruler time.
-v2.3.2 — Floating menu as separate persistent window (toggle + stays open).
-v2.0.0 — Major UI rework: English UI, CuePort theme, logo, non-dockable.
-v1.3.0 — Switched to project markers (replaced items-on-track approach).
-v1.2.0 — Hover tooltip over markers.
 v1.0.0 — Initial release.
         ]]></changelog>
         <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>

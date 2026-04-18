@@ -1,132 +1,24 @@
 -- @description CuePort Sync
--- @version 2.6.0
+-- @version 1.0.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
 --   # CuePort Sync
 --
---   Pulls top-level artist feedback for the active version of a production from
---   CuePort (cueport.app) and drops each comment as an empty media item on an
---   "Artist Comments" track.
+--   Pulls top-level artist feedback for the active version of a production
+--   from CuePort (cueport.app) and drops each comment as a colored project
+--   marker on the Reaper ruler. Hover a marker to read the full text.
 --
---   Requires ReaImGui and curl (Win 10+/macOS/Linux have curl by default).
+--   Requirements: ReaImGui (via ReaPack) + curl (bundled with Win 10+,
+--   macOS, Linux). SWS and JS_ReaScriptAPI are recommended for the best
+--   hover-detection experience.
 --
---   Usage: run from the Actions list, log in once, bind a production per .rpp,
---   then "Kommentare synchronisieren" for subsequent updates.
+--   Usage: run the action, click "Connect to CuePort", approve in the
+--   browser, pick a production and press "Sync comments".
 -- @changelog
---   v2.6.0 - Production release: removed the preview-worker toggle, the
---            [PREVIEW] badge and the dual token storage. The script now
---            always talks to the public CuePort production API. On first
---            run we migrate any existing prod/preview token to the new
---            unified storage so users don't have to pair again.
---   v2.5.3 - Sign fix: GetProjectTimeOffset returns a negative value after
---            "Set 0:00 to cursor" (ruler = internal + offset). Markers are
---            now placed at `timestamp - offset` so they land on the right
---            ruler spot instead of double the offset off.
---   v2.5.2 - Switch to the native Reaper action 43345 for setting the
---            project time offset. GetProjectStateChunk is missing from
---            some Reaper builds, so the previous state-chunk path crashed.
---   v2.5.1 - Render-start button now actually shifts the ruler. Writes the
---            offset via the project state chunk (PROJOFFS line) instead of
---            the SWS config var, which did not refresh the display. No
---            extension required any more.
---   v2.5.0 - One-click "Set render start at cursor" button + a visible
---            "CP: Render start" marker dropped at ruler 0:00. Automatic
---            re-sync after the offset changes, and a Clear button to revert
---            the offset and remove the marker.
---   v2.4.0 - Honour Reaper's project start offset when placing markers.
---            Users can now set "0:00 to current edit cursor" at the render
---            start (Right-click ruler → Change start time/measure) and the
---            synced markers land at the correct ruler positions. A short
---            how-to is shown on the bound-project screen with a live
---            indicator of the detected offset.
---   v2.3.2 - Floating menu is now a separate persistent window (not an ImGui
---            popup). Pill click toggles the menu open/closed cleanly;
---            action rows use Selectables so the menu stays open across
---            clicks. Menu sits flush under the pill (1 px overlap to hide
---            the seam). Artist name removed from the pill.
---   v2.3.1 - Floating menu popup now appears directly under the pill (not at
---            the mouse cursor). Clicking the pill a second time closes the
---            popup (we gate the open check on the previous-frame popup
---            state, so ImGui's click-outside-to-close does not trigger a
---            same-interaction reopen).
---   v2.3.0 - Floating menu rewritten Gridbox-style: tiny persistent pill
---            (logo + "CuePort Sync" + state hint) is fully draggable from
---            anywhere on its surface. A short click opens a native-style
---            popup menu with the actions; dragging moves the window. Click
---            detection uses a 4 px drag threshold so a real window drag
---            does not also trigger the popup.
---   v2.2.1 - Floating menu: header is no longer a big clickable selectable
---            so the whole body can be grabbed and dragged like Reaper's Grid
---            popup. A small chevron button on the right handles collapse.
---   v2.2.0 - Settings button + "signed in" indicator moved to the header's
---            top-right. Version no longer in header (shown in Settings).
---            Production picker has a "Back to current project" button when
---            the user opens it from a bound state. Floating menu is now
---            narrower (auto-sizes to its widest label) and collapsible by
---            clicking the header row; header shows "CuePort Sync" instead
---            of the production name.
---   v2.1.0 - Production picker grouped by artist with collapsible rows.
---            Settings moved to their own screen with a Back button.
---   v2.0.1 - Title bar now uses the CuePort dark color (was ImGui default
---            blue); fixed main window size (520x600, NoResize); smaller
---            checkboxes via tighter FramePadding.
---   v2.0.0 - Major UI rework: full English UI, CuePort theme applied to
---            every window (main, floating menu, hover tooltip, dependency
---            modal), opaque backgrounds, non-dockable, logo in header.
---   v1.6.0 - Floating menu restyled like Reaper's native popup menus (Grid-
---            dropdown aesthetic): vertical selectable items, dark neutral
---            surface, subtle hover highlight, separators, rounded corners.
---            "Projekt wechseln" + sync progress + last-sync hint inline.
---   v1.5.1 - Fix floating-menu toggle crash (setFloatingMenuEnabled upvalue)
---   v1.5.0 - Floating quick-access menu (opt-in in Einstellungen). Tiny
---            always-visible window with the bound production name + Sync /
---            Open buttons. Drag to position, ImGui remembers placement.
---   v1.4.2 - Fix checkCurl upvalue crash: parseExecOutput was declared below
---            checkCurl, so the call resolved to nil global. Inlined the tiny
---            parse logic to drop the dependency.
---   v1.4.1 - curl is now a required dependency checked at startup. Missing
---            curl → same friendly MessageBox as missing ReaImGui (no more
---            cryptic "curl failed (exit -999)" on first login).
---   v1.4.0 - Background mode: window close hides GUI but hover tooltip stays
---            active. Dedicated "Skript beenden" button to actually exit.
---            Single-instance detection via ExtState heartbeat — running the
---            action twice just re-opens the GUI of the first instance.
---            Auto-start toggle: writes a managed block into Reaper's
---            Scripts/__startup.lua so the script launches on Reaper startup
---            (hidden by default). Removed the LICE overlay + hover toggle
---            (hover is always-on now; LICE doesn't fit the marker model).
---            New dependency-check modal lists ReaImGui/SWS/JS_ReaScriptAPI
---            with install hints; required deps block startup with a message
---            box if missing.
---   v1.3.1 - Shorter marker names ("CP @Author: MM:SS"); full comment text
---            stored in ProjExtState and looked up on hover. Robust mouse→time
---            via SWS BR_PositionAtMouseCursor (JS_ReaScriptAPI fallback).
---            Sync rebuilds markers from scratch (delete ours, recreate).
---   v1.3.0 - Switch to project markers instead of items on a track. All
---            CuePort markers get a uniform purple color. Hover tooltip
---            works on markers (mouse X → project time, 8px tolerance).
---            Legacy items from earlier versions are auto-migrated (removed
---            from the Comments track) on first sync; empty track is deleted.
---   v1.2.1 - Fix hover crash on Einstellungen click (upvalue scope order) +
---            convert mouse coords through ImGui_PointConvertNative so tooltip
---            appears under the cursor on macOS/Retina + multi-display setups.
---   v1.2.0 - Hover tooltip: floating ReaImGui window shows comment text big
---            under the mouse when hovering a comment item (default ON).
---            Much more reliable than LICE overlay; no extra deps.
---   v1.1.1 - Drop JS_LICE_SetFontBgColor call (not in all JS_ReaScriptAPI
---            versions); background is already drawn via FillRect.
---   v1.1.0 - Optional LICE text overlay: draws comment text big on items
---            (requires JS_ReaScriptAPI). Toggle in Einstellungen.
---   v1.0.6 - Default Comments track height 100px for readable notes overlay
---   v1.0.5 - Fix pairing countdown (string.format %d needs math.floor on Lua 5.4)
---   v1.0.4 - Fix JSON parser next_char (number vs boolean compare never matched)
---   v1.0.3 - Use absolute curl path on macOS/Linux (Reaper doesn't inherit shell PATH)
---   v1.0.2 - Fix PushFont signature for newer ReaImGui (size required as 3rd arg)
---   v1.0.1 - Add ReaPack metadata header so the action registers automatically
 --   v1.0.0 - Initial release
 
-local VERSION = '2.6.0'
+local VERSION = '1.0.0'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
