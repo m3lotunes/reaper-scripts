@@ -33,13 +33,15 @@ Reaper integration for \cf2 CuePort\cf1 . Pulls top-level artist comments for th
 4. Pick a production and bind it to the open .rpp.\par
 5. Click \b Sync comments\b0 . Done.\par
 \par
-\b Important\b0\par
-The rendered mix must start at 0:00 on the Reaper timeline so the marker timestamps line up with the audio.\par
+\b Time alignment\b0\par
+Comments are placed relative to the start of the rendered audio. If your mix does not begin at 0:00 on the Reaper timeline, right-click the ruler, choose \b Change start time/measure \f8594 Set 0:00 to current edit cursor\b0  with the cursor at the render start, then press \b Sync comments\b0  again. Markers will line up.\par
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="2.3.2" author="CuePort" time="2026-04-18T16:30:00Z">
+      <version name="2.4.0" author="CuePort" time="2026-04-18T17:00:00Z">
         <changelog><![CDATA[
+v2.4.0 — Respect Reaper project start offset. Set "0:00 to current edit cursor"
+        at the render start, re-sync, and markers land on the right ruler time.
 v2.3.2 — Floating menu as separate persistent window (toggle + stays open).
 v2.0.0 — Major UI rework: English UI, CuePort theme, logo, non-dockable.
 v1.3.0 — Switched to project markers (replaced items-on-track approach).

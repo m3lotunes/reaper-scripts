@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 2.3.2
+-- @version 2.4.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -14,6 +14,12 @@
 --   Usage: run from the Actions list, log in once, bind a production per .rpp,
 --   then "Kommentare synchronisieren" for subsequent updates.
 -- @changelog
+--   v2.4.0 - Honour Reaper's project start offset when placing markers.
+--            Users can now set "0:00 to current edit cursor" at the render
+--            start (Right-click ruler → Change start time/measure) and the
+--            synced markers land at the correct ruler positions. A short
+--            how-to is shown on the bound-project screen with a live
+--            indicator of the detected offset.
 --   v2.3.2 - Floating menu is now a separate persistent window (not an ImGui
 --            popup). Pill click toggles the menu open/closed cleanly;
 --            action rows use Selectables so the menu stays open across
@@ -100,7 +106,7 @@
 --   v1.0.1 - Add ReaPack metadata header so the action registers automatically
 --   v1.0.0 - Initial release
 
-local VERSION = '2.3.2'
+local VERSION = '2.4.0'
 local API_PROD    = 'https://melotunes-upload.m3lotunes.workers.dev'
 local API_PREVIEW = 'https://melotunes-preview.m3lotunes.workers.dev'
 
@@ -792,11 +798,29 @@ end
 -- we can recover the full content at hover time after a script reload.
 local COMMENTS_CACHE_KEY = 'comments_cache'
 
-local function saveCommentsCache(comments)
+-- Reaper lets the user shift the displayed time origin via
+-- "Change start time/measure → Set 0:00 to current edit cursor". When that
+-- offset is non-zero, the ruler shows `internal - offset`, i.e. a marker
+-- stored at internal position P appears at ruler position P - offset. Our
+-- comment timestamps are ruler-relative (seconds from the start of the
+-- audio, as the artist heard it), so we must create markers at
+-- `timestamp + offset` to land them at the correct ruler spot.
+local function getProjectStartOffset()
+  if not reaper.GetProjectTimeOffset then return 0 end
+  local ok, v = pcall(reaper.GetProjectTimeOffset, 0, false)
+  if ok and type(v) == 'number' then return v end
+  return 0
+end
+
+local function saveCommentsCache(comments, offset)
   local stripped = {}
   for _, c in ipairs(comments or {}) do
     stripped[#stripped+1] = {
-      id = c.id, timestamp = c.timestamp, author = c.author, text = c.text,
+      id = c.id,
+      timestamp = c.timestamp,                       -- ruler-relative, as returned by the API
+      markerPos = (c.timestamp or 0) + (offset or 0), -- internal Reaper position where the marker lives
+      author = c.author,
+      text = c.text,
     }
   end
   setProjExt(COMMENTS_CACHE_KEY, json.encode(stripped))
@@ -810,13 +834,17 @@ local function loadCommentsCache()
   return parsed
 end
 
+-- Find the cached comment whose stored marker position matches a given
+-- Reaper internal time. Falls back to `timestamp` for cache entries written
+-- by older script versions that did not store `markerPos`.
 local function findCachedCommentAtPos(pos)
   if not pos then return nil end
   local list = loadCommentsCache()
   local best, bestD = nil, math.huge
   for _, c in ipairs(list) do
-    if c.timestamp then
-      local d = math.abs(c.timestamp - pos)
+    local target = c.markerPos or c.timestamp
+    if target then
+      local d = math.abs(target - pos)
       if d < 0.1 and d < bestD then best, bestD = c, d end
     end
   end
@@ -859,6 +887,11 @@ local function syncCommentsToMarkers(comments)
 
   table.sort(comments, function(a, b) return (a.timestamp or 0) < (b.timestamp or 0) end)
 
+  -- Honour Reaper's project start offset so comments at timestamp T end up
+  -- at ruler 0:00 + T (not at internal time T which would show at T-offset
+  -- once the user has moved the ruler origin).
+  local offset = getProjectStartOffset()
+
   -- Rebuild strategy: delete all our existing CP markers, then create fresh
   -- from the current API payload. Simpler than diffing and keeps the marker
   -- ruler in lock-step with the server without carrying stable IDs in names.
@@ -874,13 +907,14 @@ local function syncCommentsToMarkers(comments)
   for _, c in ipairs(comments) do
     if c.timestamp ~= nil and c.id then
       local name = formatCueportMarkerName(c)
-      r.AddProjectMarker2(0, false, c.timestamp, 0, name, -1, color)
+      local markerPos = c.timestamp + offset
+      r.AddProjectMarker2(0, false, markerPos, 0, name, -1, color)
       created = created + 1
       validComments[#validComments+1] = c
     end
   end
 
-  saveCommentsCache(validComments)
+  saveCommentsCache(validComments, offset)
 
   r.UpdateTimeline()
   r.Undo_EndBlock('CuePort: Sync artist comments (markers)', -1)
@@ -888,6 +922,7 @@ local function syncCommentsToMarkers(comments)
     created = created,
     removed = previouslyCount,
     legacyItemsRemoved = legacyRemoved,
+    offset = offset,
   }
 end
 
@@ -1679,6 +1714,33 @@ local function renderBound()
     ImGui.Dummy(ctx, 0, 4)
     ImGui.TextDisabled(ctx, state.syncStatus or '')
     ImGui.TextDisabled(ctx, 'Last sync: ' .. formatRelTime(state.lastSyncAt))
+  end
+
+  -- Time-alignment hint: explain Reaper's project start offset trick so the
+  -- user does not have to align their mix to project-time 0:00 manually.
+  ImGui.Dummy(ctx, 0, 14)
+  ImGui.Separator(ctx)
+  ImGui.Dummy(ctx, 0, 6)
+  ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.accent)
+  ImGui.Text(ctx, 'Align markers with your render')
+  ImGui.PopStyleColor(ctx)
+  if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 460) end
+  ImGui.TextDisabled(ctx,
+    'Comments are placed relative to the start of the rendered audio. If ' ..
+    'your mix does not begin at 0:00 on the Reaper timeline:')
+  ImGui.TextDisabled(ctx,
+    '  1. Move the edit cursor to the exact render start.')
+  ImGui.TextDisabled(ctx,
+    '  2. Right-click the ruler → Change start time/measure → ' ..
+    '"Set 0:00 to current edit cursor".')
+  ImGui.TextDisabled(ctx,
+    '  3. Press Sync comments again. Markers will now line up with the audio.')
+  if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
+  local curOffset = getProjectStartOffset()
+  if math.abs(curOffset) > 0.001 then
+    ImGui.Dummy(ctx, 0, 4)
+    ImGui.TextColored(ctx, CP_COLORS.success,
+      string.format('Project start offset detected: %.2fs', curOffset))
   end
 
   ImGui.Dummy(ctx, 0, 12)
