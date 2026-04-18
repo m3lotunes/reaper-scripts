@@ -38,8 +38,10 @@ Comments are placed relative to the start of the rendered audio. If your mix doe
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="2.5.2" author="CuePort" time="2026-04-18T18:30:00Z">
+      <version name="2.5.3" author="CuePort" time="2026-04-18T19:00:00Z">
         <changelog><![CDATA[
+v2.5.3 — Sign fix for the project time offset. Markers now land at the
+        correct ruler position when "Set render start" has been used.
 v2.5.2 — Use Reaper action 43345 to set the time offset (reliable on every
         Reaper version; GetProjectStateChunk missing on some builds).
 v2.5.1 — Render-start button now writes PROJOFFS directly (no SWS needed,

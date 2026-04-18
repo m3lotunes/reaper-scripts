@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 2.5.2
+-- @version 2.5.3
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -14,6 +14,10 @@
 --   Usage: run from the Actions list, log in once, bind a production per .rpp,
 --   then "Kommentare synchronisieren" for subsequent updates.
 -- @changelog
+--   v2.5.3 - Sign fix: GetProjectTimeOffset returns a negative value after
+--            "Set 0:00 to cursor" (ruler = internal + offset). Markers are
+--            now placed at `timestamp - offset` so they land on the right
+--            ruler spot instead of double the offset off.
 --   v2.5.2 - Switch to the native Reaper action 43345 for setting the
 --            project time offset. GetProjectStateChunk is missing from
 --            some Reaper builds, so the previous state-chunk path crashed.
@@ -117,7 +121,7 @@
 --   v1.0.1 - Add ReaPack metadata header so the action registers automatically
 --   v1.0.0 - Initial release
 
-local VERSION = '2.5.2'
+local VERSION = '2.5.3'
 local API_PROD    = 'https://melotunes-upload.m3lotunes.workers.dev'
 local API_PREVIEW = 'https://melotunes-preview.m3lotunes.workers.dev'
 
@@ -898,7 +902,7 @@ local function saveCommentsCache(comments, offset)
     stripped[#stripped+1] = {
       id = c.id,
       timestamp = c.timestamp,                       -- ruler-relative, as returned by the API
-      markerPos = (c.timestamp or 0) + (offset or 0), -- internal Reaper position where the marker lives
+      markerPos = (c.timestamp or 0) - (offset or 0), -- internal Reaper position where the marker lives
       author = c.author,
       text = c.text,
     }
@@ -987,7 +991,7 @@ local function syncCommentsToMarkers(comments)
   for _, c in ipairs(comments) do
     if c.timestamp ~= nil and c.id then
       local name = formatCueportMarkerName(c)
-      local markerPos = c.timestamp + offset
+      local markerPos = c.timestamp - offset
       r.AddProjectMarker2(0, false, markerPos, 0, name, -1, color)
       created = created + 1
       validComments[#validComments+1] = c
