@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 2.4.0
+-- @version 2.5.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -14,6 +14,11 @@
 --   Usage: run from the Actions list, log in once, bind a production per .rpp,
 --   then "Kommentare synchronisieren" for subsequent updates.
 -- @changelog
+--   v2.5.0 - One-click "Set render start at cursor" button + a visible
+--            "CP: Render start" marker dropped at ruler 0:00. Automatic
+--            re-sync after the offset changes, and a Clear button to revert
+--            the offset and remove the marker. Requires SWS (falls back to
+--            the manual ruler-menu instructions otherwise).
 --   v2.4.0 - Honour Reaper's project start offset when placing markers.
 --            Users can now set "0:00 to current edit cursor" at the render
 --            start (Right-click ruler → Change start time/measure) and the
@@ -106,7 +111,7 @@
 --   v1.0.1 - Add ReaPack metadata header so the action registers automatically
 --   v1.0.0 - Initial release
 
-local VERSION = '2.4.0'
+local VERSION = '2.5.0'
 local API_PROD    = 'https://melotunes-upload.m3lotunes.workers.dev'
 local API_PREVIEW = 'https://melotunes-preview.m3lotunes.workers.dev'
 
@@ -810,6 +815,70 @@ local function getProjectStartOffset()
   local ok, v = pcall(reaper.GetProjectTimeOffset, 0, false)
   if ok and type(v) == 'number' then return v end
   return 0
+end
+
+-- Distinct name + color for the visible "render start" marker. We check for
+-- exact name match so regular CuePort comment markers (prefix "CP ") are
+-- unaffected.
+local CP_START_MARKER_NAME = 'CP: Render start'
+
+local function cpStartMarkerColor()
+  -- Lighter/brighter purple — distinct from comment markers (darker purple)
+  local rgb = r.ColorToNative(0xE0, 0x9B, 0xFF)
+  return rgb | 0x1000000
+end
+
+local function findRenderStartMarker()
+  local i = 0
+  while true do
+    local retval, isrgn, pos, _, name, idx = r.EnumProjectMarkers3(0, i)
+    if retval == 0 then break end
+    if not isrgn and name == CP_START_MARKER_NAME then
+      return { pos = pos, idx = idx }
+    end
+    i = i + 1
+  end
+  return nil
+end
+
+-- Shift the project ruler so that the edit-cursor position becomes 0:00 AND
+-- drop a visible "render start" marker at that spot. Requires SWS (the
+-- projtimeoffs config var is only writable via SWS's SNM_SetDoubleConfigVar).
+-- Returns ok (bool), error (string or nil).
+local function setRenderStartAtCursor()
+  if not reaper.SNM_SetDoubleConfigVar then
+    return false, 'SWS Extension is required to set the render start automatically.'
+  end
+  local cursor = r.GetCursorPosition()
+  r.Undo_BeginBlock()
+  reaper.SNM_SetDoubleConfigVar('projtimeoffs', cursor)
+
+  local existing = findRenderStartMarker()
+  local color = cpStartMarkerColor()
+  if existing then
+    r.SetProjectMarker3(0, existing.idx, false, cursor, 0, CP_START_MARKER_NAME, color)
+  else
+    r.AddProjectMarker2(0, false, cursor, 0, CP_START_MARKER_NAME, -1, color)
+  end
+
+  r.UpdateTimeline()
+  r.Undo_EndBlock('CuePort: Set render start', -1)
+  return true
+end
+
+-- Clear the project time offset (back to 0:00 at internal 0) and remove the
+-- render-start marker we placed.
+local function clearRenderStart()
+  r.Undo_BeginBlock()
+  if reaper.SNM_SetDoubleConfigVar then
+    reaper.SNM_SetDoubleConfigVar('projtimeoffs', 0)
+  end
+  local existing = findRenderStartMarker()
+  if existing then
+    r.DeleteProjectMarker(0, existing.idx, false)
+  end
+  r.UpdateTimeline()
+  r.Undo_EndBlock('CuePort: Clear render start', -1)
 end
 
 local function saveCommentsCache(comments, offset)
@@ -1716,8 +1785,9 @@ local function renderBound()
     ImGui.TextDisabled(ctx, 'Last sync: ' .. formatRelTime(state.lastSyncAt))
   end
 
-  -- Time-alignment hint: explain Reaper's project start offset trick so the
-  -- user does not have to align their mix to project-time 0:00 manually.
+  -- ── Render-start anchor section ─────────────────────────────────────────
+  -- Lets the user tell Reaper where the render starts (== ruler 0:00) so
+  -- that comment timestamps land at the correct ruler positions.
   ImGui.Dummy(ctx, 0, 14)
   ImGui.Separator(ctx)
   ImGui.Dummy(ctx, 0, 6)
@@ -1726,21 +1796,49 @@ local function renderBound()
   ImGui.PopStyleColor(ctx)
   if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 460) end
   ImGui.TextDisabled(ctx,
-    'Comments are placed relative to the start of the rendered audio. If ' ..
-    'your mix does not begin at 0:00 on the Reaper timeline:')
-  ImGui.TextDisabled(ctx,
-    '  1. Move the edit cursor to the exact render start.')
-  ImGui.TextDisabled(ctx,
-    '  2. Right-click the ruler → Change start time/measure → ' ..
-    '"Set 0:00 to current edit cursor".')
-  ImGui.TextDisabled(ctx,
-    '  3. Press Sync comments again. Markers will now line up with the audio.')
+    'Move the edit cursor to the exact start of your rendered audio and ' ..
+    'click the button below. CuePort will shift the ruler so that position ' ..
+    'becomes 0:00 and drop a visible marker there.')
   if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
+
+  local swsOk = reaper.SNM_SetDoubleConfigVar ~= nil
+  ImGui.Dummy(ctx, 0, 6)
+  if swsOk then
+    if ImGui.Button(ctx, 'Set render start at cursor', 240, 0) then
+      local ok, err = setRenderStartAtCursor()
+      if ok then
+        state.errorMsg = nil
+        -- Re-sync right away so existing markers get repositioned against
+        -- the new offset.
+        if state.boundProductionId and not state.syncInProgress then
+          doSync()
+        end
+      else
+        state.errorMsg = err or 'Could not set render start.'
+      end
+    end
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, 'Clear') then
+      clearRenderStart()
+      if state.boundProductionId and not state.syncInProgress then
+        doSync()
+      end
+    end
+  else
+    ImGui.TextColored(ctx, CP_COLORS.warn,
+      'Install SWS Extension to enable the one-click button.')
+    if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 460) end
+    ImGui.TextDisabled(ctx,
+      'Manual method: right-click the ruler → Change start time/measure → ' ..
+      '"Set 0:00 to current edit cursor", then Sync again.')
+    if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
+  end
+
   local curOffset = getProjectStartOffset()
   if math.abs(curOffset) > 0.001 then
     ImGui.Dummy(ctx, 0, 4)
     ImGui.TextColored(ctx, CP_COLORS.success,
-      string.format('Project start offset detected: %.2fs', curOffset))
+      string.format('Render start is set (ruler offset %+.2fs).', curOffset))
   end
 
   ImGui.Dummy(ctx, 0, 12)
