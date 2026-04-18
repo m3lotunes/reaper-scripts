@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="Melotunes Reaper Scripts">
+  <category name="Melotunes/CuePort">
+    <reapack name="cueport_sync.lua" type="script" desc="CuePort Sync — Artist comments as markers">
+      <metadata>
+        <description><![CDATA[
+# CuePort Sync
+
+Reaper integration for CuePort — pulls top-level artist comments for the
+active version of a production and places them as project markers with an
+on-hover tooltip showing the full text. Plus a floating pill with quick
+actions (sync, change project, open main window).
+        ]]></description>
+        <link rel="website">https://cueport.app</link>
+      </metadata>
+      <version name="2.3.2" author="CuePort" time="2026-04-18T16:30:00Z">
+        <changelog><![CDATA[
+v2.3.2 — Floating menu as separate persistent window (toggle + stays open).
+v2.0.0 — Major UI rework (English + CuePort theme + logo + non-dockable).
+        ]]></changelog>
+        <source>https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+    </reapack>
+  </category>
+</index>
