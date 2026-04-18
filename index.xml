@@ -46,7 +46,7 @@ v1.3.0 — Switched to project markers (replaced items-on-track approach).
 v1.2.0 — Hover tooltip over markers.
 v1.0.0 — Initial release.
         ]]></changelog>
-        <source>https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
         <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
       </version>
     </reapack>
