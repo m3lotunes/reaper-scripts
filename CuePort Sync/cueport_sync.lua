@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 2.5.1
+-- @version 2.5.2
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -14,6 +14,9 @@
 --   Usage: run from the Actions list, log in once, bind a production per .rpp,
 --   then "Kommentare synchronisieren" for subsequent updates.
 -- @changelog
+--   v2.5.2 - Switch to the native Reaper action 43345 for setting the
+--            project time offset. GetProjectStateChunk is missing from
+--            some Reaper builds, so the previous state-chunk path crashed.
 --   v2.5.1 - Render-start button now actually shifts the ruler. Writes the
 --            offset via the project state chunk (PROJOFFS line) instead of
 --            the SWS config var, which did not refresh the display. No
@@ -114,7 +117,7 @@
 --   v1.0.1 - Add ReaPack metadata header so the action registers automatically
 --   v1.0.0 - Initial release
 
-local VERSION = '2.5.1'
+local VERSION = '2.5.2'
 local API_PROD    = 'https://melotunes-upload.m3lotunes.workers.dev'
 local API_PREVIEW = 'https://melotunes-preview.m3lotunes.workers.dev'
 
@@ -847,54 +850,16 @@ end
 -- Shift the project ruler so that the edit-cursor position becomes 0:00 AND
 -- drop a visible "render start" marker at that spot.
 --
--- Reaper stores the offset in the project state chunk as a PROJOFFS line —
--- Writing it via SWS's `projtimeoffs` config var does not refresh the ruler
--- in some versions, so we go through the state chunk instead (works on any
--- Reaper version, no extension required).
--- Returns ok (bool), error (string or nil).
-local function setProjectStartTimeOffset(offset)
-  local ok, chunk = reaper.GetProjectStateChunk(0, false)
-  if not ok or not chunk or chunk == '' then
-    return false, 'Could not read project state'
-  end
-
-  local replaced = false
-  -- Match "PROJOFFS <first> ..." keeping any trailing fields intact.
-  local newChunk, n = chunk:gsub(
-    '(\n[ \t]*PROJOFFS[ \t]+)[-%d%.eE]+([^\n]*)',
-    function(prefix, rest)
-      return prefix .. string.format('%.8f', offset) .. rest
-    end,
-    1)
-  if n > 0 then
-    chunk = newChunk
-    replaced = true
-  end
-
-  if not replaced then
-    -- Project chunk has no PROJOFFS line yet → inject one right after the
-    -- opening <REAPER_PROJECT header line.
-    chunk = chunk:gsub(
-      '(<REAPER_PROJECT[^\n]*\n)',
-      '%1  PROJOFFS ' .. string.format('%.8f', offset) .. ' 0 0\n',
-      1)
-  end
-
-  reaper.SetProjectStateChunk(chunk, false)
-  reaper.UpdateTimeline()
-  if reaper.UpdateArrange then reaper.UpdateArrange() end
-  return true
-end
+-- We invoke the native Reaper action 43345 ("Markers: Set project time
+-- offset to current edit cursor position") — the same action triggered by
+-- the ruler-right-click menu under "Change start time/measure → Set 0:00
+-- to current edit cursor". This is version-proof across Reaper builds.
+local ACTION_SET_TIMEOFFS_TO_CURSOR = 43345
 
 local function setRenderStartAtCursor()
   local cursor = r.GetCursorPosition()
   r.Undo_BeginBlock()
-
-  local ok, err = setProjectStartTimeOffset(cursor)
-  if not ok then
-    r.Undo_EndBlock('CuePort: Set render start (failed)', -1)
-    return false, err
-  end
+  r.Main_OnCommand(ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
 
   local existing = findRenderStartMarker()
   local color = cpStartMarkerColor()
@@ -910,10 +875,15 @@ local function setRenderStartAtCursor()
 end
 
 -- Clear the project time offset (back to 0:00 at internal 0) and remove the
--- render-start marker we placed.
+-- render-start marker we placed. We reset by temporarily placing the edit
+-- cursor at 0 and re-running the "set offset" action; then restore the
+-- cursor.
 local function clearRenderStart()
   r.Undo_BeginBlock()
-  setProjectStartTimeOffset(0)
+  local savedCursor = r.GetCursorPosition()
+  r.SetEditCurPos(0, false, false)
+  r.Main_OnCommand(ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
+  r.SetEditCurPos(savedCursor, false, false)
   local existing = findRenderStartMarker()
   if existing then
     r.DeleteProjectMarker(0, existing.idx, false)
