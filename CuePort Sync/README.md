@@ -1,67 +1,74 @@
-# CuePort Sync — Reaper Integration
+# CuePort Sync
 
-Reaper-Script, das Top-Level-Kommentare des Artists aus [CuePort](https://cueport.app)
-als Empty-Items auf einer "Artist Comments"-Spur im Reaper-Projekt anlegt.
+Reaper integration for [CuePort](https://cueport.app). Artist feedback on the
+active version of a production is pulled into your Reaper project as native
+project markers, with a hover tooltip showing the full comment.
 
-## Installation via ReaPack
+## Features
 
-1. **ReaPack installieren** (falls noch nicht vorhanden): <https://reapack.com>
-2. In Reaper: `Extensions → ReaPack → Import repositories...`
-3. Repository-URL einfügen:
+- **Device-code pairing** with the CuePort studio portal — no passwords in the
+  script, no manual tokens to copy around.
+- **Production picker** grouped by artist with an inline search filter.
+- **Project markers** carrying a uniform color so you can spot CuePort markers
+  at a glance. Your own markers stay untouched.
+- **Hover tooltip** shows the author + timestamp + full comment text when you
+  move the mouse near a marker.
+- **Floating pill** with a popup menu for one-click sync / change project /
+  open the main window.
+- **Per-project binding** stored in the `.rpp` via `SetProjExtState`, so every
+  project keeps its own CuePort production link.
+- **Auto-start** option so the script runs in the background whenever Reaper
+  starts.
 
-   **Preview (Testing, aktueller Branch):**
-   ```
-   https://claude-reaper-artist-comment.studio-manager.pages.dev/reaper/index-preview.xml
-   ```
+## Requirements
 
-   **Production (nach Merge auf main):**
-   ```
-   https://cueport.app/reaper/index.xml
-   ```
+| Extension | Required? | Install |
+| --- | --- | --- |
+| Reaper 6.68+ | required | <https://reaper.fm> |
+| ReaImGui | required | `Extensions → ReaPack → Browse packages → ReaImGui` |
+| curl | required | bundled with Win 10+, macOS and Linux |
+| SWS Extension | recommended | <https://www.sws-extension.org> |
+| JS_ReaScriptAPI | recommended | `Extensions → ReaPack → Browse packages → js_ReaScriptAPI` |
 
-4. `Extensions → ReaPack → Browse packages` → Suche `CuePort` → `Install`
-5. Reaper neu starten
-6. ReaImGui installieren (falls noch nicht): Browse packages → `ReaImGui` → Install
+If ReaImGui or curl are missing, the script shows a clear message box at
+launch with installation hints. SWS and JS_ReaScriptAPI are optional — the
+hover tooltip works best with SWS; otherwise a JS_ReaScriptAPI fallback is
+used.
 
 ## Usage
 
-1. **Action ausführen:** `Actions → Show action list → CuePort Sync`
-2. **Ersteinrichtung:** Klick auf "Mit CuePort verbinden" → Browser-Dialog bestätigen
-3. **Pro Projekt:** Produktion aus Liste wählen → Binding in `.rpp` gespeichert
-4. **Tagesbetrieb:** Ein Klick auf "Kommentare synchronisieren"
+1. Run the action **Script: cueport_sync.lua** (use Reaper's Actions list).
+2. Click **Connect to CuePort** — your browser opens, log in to the studio
+   portal, approve the pairing code.
+3. Pick a production from the list. The choice is stored inside the open
+   `.rpp` so the next Reaper launch with that file remembers the binding.
+4. Click **Sync comments**. CuePort markers appear on the ruler.
+5. Hover a marker to read the full comment. Click the floating pill for
+   quick actions at any time.
 
-## Preview-Worker testen
+## Timing note
 
-Aktuell zeigt das Script auf den **Production-Worker** (`melotunes-upload`). Für
-den Preview-Test:
+The rendered mix must start at **0:00** on the Reaper timeline so the marker
+timestamps line up with the audio. (A configurable anchor is planned for a
+later version.)
 
-1. Script starten → unten auf "Einstellungen" klicken
-2. Haken bei "Preview-Worker verwenden"
-3. Token wird separat für Preview gespeichert (prod-Token bleibt erhalten)
+## Settings
 
-## Wichtiger Hinweis zum Timing
+Open the main window → top-right **Settings** button:
 
-Das Script platziert Kommentare am absoluten `comment.timestamp` auf der Reaper-
-Timeline. Damit die Positionen stimmen, muss der Audio-Render im Reaper-Projekt
-bei **0:00** starten. Falls du einen Count-In oder Pre-Roll hast, verschiebe
-den Render so, dass der erste Sample bei 0:00 liegt — oder warte auf Phase 2
-(Anchor-Marker).
+- **API** — switch between the production and preview workers.
+- **Startup** — toggle auto-start (adds/removes a block in
+  `~/Library/Application Support/REAPER/Scripts/__startup.lua`).
+- **Quick access** — toggle the floating pill.
+- **Diagnostics** — check required and recommended dependencies.
+- **Account** — log out / quit the script.
 
-## Troubleshooting
+## Under the hood
 
-- **"ReaImGui nicht installiert"** → via ReaPack installieren (Browse packages → ReaImGui)
-- **"curl failed"** → curl fehlt im System. Windows 10+/macOS/Linux haben es
-  normalerweise. Falls nicht: <https://curl.se/download.html>
-- **"Token nicht mehr gültig"** → im Studio-Portal (Integrationen) wurde der
-  Token widerrufen. Einfach neu verbinden.
-- **Kommentare am falschen Ort** → der Render startet nicht bei 0:00. Siehe oben.
-
-## Architektur
-
-- Single-file Lua-Script, ~950 Zeilen inkl. JSON-Parser
-- HTTP via `curl` through `reaper.ExecProcess` (cross-platform, keine Extra-Deps)
-- GUI via ReaImGui
-- Token pro Preview/Prod getrennt, persistent in globalem `ExtState`
-- Produktions-Binding im Projekt via `ProjExtState` (überlebt `.rpp`-Save/Load)
-- Diff-Sync via `P_EXT:cueport_feedback_id` auf jedem Item — manuell angelegte
-  Items auf der Comments-Spur werden **nicht** angetastet
+- One self-contained Lua file, ~2000 lines including a small inline JSON
+  parser.
+- HTTP via `curl` through `reaper.ExecProcess` (cross-platform).
+- UI via ReaImGui; non-dockable windows for a tool-like feel.
+- Markers carry a uniform color; comment metadata (author, text) is cached
+  in `ProjExtState`, not in the marker name, so the ruler stays clean.
+- Single-instance guard using a short-lived heartbeat in global `ExtState`.

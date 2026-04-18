@@ -1,21 +1,26 @@
 # Melotunes Reaper Scripts
 
-Scripts by [Melotunes Studio](https://cueport.app).
+A collection of Reaper scripts built and maintained by [Melotunes Studio](https://cueport.app).
 
 ## Installation
 
-1. Install [ReaPack](https://reapack.com)
-2. In Reaper: `Extensions → ReaPack → Import repositories…` and paste:
+1. Install [ReaPack](https://reapack.com) if you don't already have it.
+2. In Reaper, open **Extensions → ReaPack → Import repositories…** and paste:
 
        https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/index.xml
 
-3. `Browse packages` and install the script(s) you want.
+3. Open **Browse packages**, find the scripts you want and install them.
 
 ## Scripts
 
 ### CuePort Sync
-Pulls top-level artist comments from [CuePort](https://cueport.app) and drops
-them as project markers with an on-hover tooltip showing the full text. Plus
-a floating pill with sync / change-project quick actions.
+Reaper integration for [CuePort](https://cueport.app). Pulls top-level artist
+comments for the active version of a production and drops them as project
+markers with an on-hover tooltip showing the full text. Comes with a floating
+pill for quick actions (sync, change project, open main window).
 
-See the [CuePort Sync folder](CuePort%20Sync/) for details.
+See [CuePort Sync/](CuePort%20Sync/) for details.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
