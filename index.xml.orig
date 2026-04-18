@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="Melotunes">
+  <category name="CuePort">
+    <reapack name="cueport_sync.lua" type="script" desc="CuePort Sync — Artist comments as markers">
+      <metadata>
+        <description>{\rtf1\ansi\deflang1033
+{\fonttbl{\f0\fswiss\fcharset0 Helvetica;}}
+{\colortbl;\red230\green230\blue230;\red176\green136\blue224;\red150\green150\blue155;}
+\f0\fs22\cf1
+\fs28\b\cf2 CuePort Sync\b0\fs22\cf1\par
+\par
+Reaper integration for \cf2 CuePort\cf1 . Pulls top-level artist comments for the active version of a production and places them as project markers with an on-hover tooltip showing the full text.\par
+\par
+\b Features\b0\par
+- Device-code pairing with the CuePort studio portal\par
+- Production picker grouped by artist with inline search\par
+- Project markers with uniform color + hidden ID encoding\par
+- Hover tooltip shows the full comment text\par
+- Floating pill + popup menu for one-click sync\par
+- Per-project binding stored in the .rpp\par
+\par
+\b Requirements\b0\par
+- Reaper 6.68 or later\par
+- \b ReaImGui\b0  (install via ReaPack, required)\par
+- \b curl\b0  (bundled with Win 10+/macOS/Linux)\par
+- \b SWS Extension\b0  (recommended, for reliable hover detection)\par
+- \b JS_ReaScriptAPI\b0  (recommended)\par
+\par
+\b Setup\b0\par
+1. Install this package via ReaPack.\par
+2. Open the Reaper Actions list and run \b cueport_sync.lua\b0 .\par
+3. Click \b Connect to CuePort\b0  and approve in the browser.\par
+4. Pick a production and bind it to the open .rpp.\par
+5. Click \b Sync comments\b0 . Done.\par
+\par
+\b Time alignment\b0\par
+Comments are placed relative to the start of the rendered audio. If your mix does not begin at 0:00 on the Reaper timeline, right-click the ruler, choose \b Change start time/measure \f8594 Set 0:00 to current edit cursor\b0  with the cursor at the render start, then press \b Sync comments\b0  again. Markers will line up.\par
+}</description>
+        <link rel="website">https://cueport.app</link>
+      </metadata>
+      <version name="2.5.1" author="CuePort" time="2026-04-18T18:10:00Z">
+        <changelog><![CDATA[
+v2.5.1 — Render-start button now actually shifts the ruler (writes PROJOFFS
+        directly in the project chunk; no SWS needed).
+v2.5.0 — One-click "Set render start at cursor" button + visible render-start
+        marker. Auto re-sync after the offset changes.
+v2.4.0 — Respect Reaper project start offset. Set "0:00 to current edit cursor"
+        at the render start, re-sync, and markers land on the right ruler time.
+v2.3.2 — Floating menu as separate persistent window (toggle + stays open).
+v2.0.0 — Major UI rework: English UI, CuePort theme, logo, non-dockable.
+v1.3.0 — Switched to project markers (replaced items-on-track approach).
+v1.2.0 — Hover tooltip over markers.
+v1.0.0 — Initial release.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+    </reapack>
+  </category>
+</index>

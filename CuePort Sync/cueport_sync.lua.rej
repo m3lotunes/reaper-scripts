@@ -1,0 +1,95 @@
+@@ -1,5 +1,5 @@
+ -- @description CuePort Sync
+--- @version 2.5.0
++-- @version 2.5.2
+ -- @author CuePort
+ -- @website https://cueport.app
+ -- @about
+@@ -14,11 +14,17 @@
+ --   Usage: run from the Actions list, log in once, bind a production per .rpp,
+ --   then "Kommentare synchronisieren" for subsequent updates.
+ -- @changelog
++--   v2.5.2 - Use Reaper built-in action 43345 to set the time offset instead
++--            of the project-state-chunk hack. Reliable on every Reaper
++--            version (GetProjectStateChunk is not available in some builds).
++--   v2.5.1 - Render-start button now actually shifts the ruler. Writes the
++--            offset via the project state chunk (PROJOFFS line) instead of
++--            the SWS config var, which did not refresh the display. No
++--            extension required any more.
+ --   v2.5.0 - One-click "Set render start at cursor" button + a visible
+ --            "CP: Render start" marker dropped at ruler 0:00. Automatic
+ --            re-sync after the offset changes, and a Clear button to revert
+---            the offset and remove the marker. Requires SWS (falls back to
+---            the manual ruler-menu instructions otherwise).
++--            the offset and remove the marker.
+ --   v2.4.0 - Honour Reaper's project start offset when placing markers.
+ --            Users can now set "0:00 to current edit cursor" at the render
+ --            start (Right-click ruler → Change start time/measure) and the
+@@ -111,7 +117,7 @@
+ --   v1.0.1 - Add ReaPack metadata header so the action registers automatically
+ --   v1.0.0 - Initial release
+ 
+-local VERSION = '2.5.0'
++local VERSION = '2.5.2'
+ local API_PROD    = 'https://melotunes-upload.m3lotunes.workers.dev'
+ local API_PREVIEW = 'https://melotunes-preview.m3lotunes.workers.dev'
+ 
+@@ -841,17 +847,22 @@
+   return nil
+ end
+ 
++-- Action 43345 = "Markers: Set project time offset to current edit cursor
++-- position" — the same action that Reaper's ruler-right-click menu runs
++-- under "Change start time/measure → Set 0:00 to current edit cursor".
++-- Using the built-in action is version-proof and doesn't need the project
++-- state chunk API (which is missing on some Reaper builds).
++local ACTION_SET_TIMEOFFS_TO_CURSOR = 43345
++
+ -- Shift the project ruler so that the edit-cursor position becomes 0:00 AND
+--- drop a visible "render start" marker at that spot. Requires SWS (the
+--- projtimeoffs config var is only writable via SWS's SNM_SetDoubleConfigVar).
++-- drop a visible "render start" marker at that spot.
+ -- Returns ok (bool), error (string or nil).
+ local function setRenderStartAtCursor()
+-  if not reaper.SNM_SetDoubleConfigVar then
+-    return false, 'SWS Extension is required to set the render start automatically.'
+-  end
+   local cursor = r.GetCursorPosition()
+   r.Undo_BeginBlock()
+-  reaper.SNM_SetDoubleConfigVar('projtimeoffs', cursor)
++
++  -- Fire the Reaper action on the current project
++  r.Main_OnCommand(ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
+ 
+   local existing = findRenderStartMarker()
+   local color = cpStartMarkerColor()
+@@ -867,12 +878,16 @@
+ end
+ 
+ -- Clear the project time offset (back to 0:00 at internal 0) and remove the
+--- render-start marker we placed.
++-- render-start marker we placed. We reset by temporarily placing the edit
++-- cursor at 0 and re-running the "set offset" action; then restore the
++-- cursor.
+ local function clearRenderStart()
+   r.Undo_BeginBlock()
+-  if reaper.SNM_SetDoubleConfigVar then
+-    reaper.SNM_SetDoubleConfigVar('projtimeoffs', 0)
+-  end
++  local savedCursor = r.GetCursorPosition()
++  r.SetEditCurPos(0, false, false)
++  r.Main_OnCommand(ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
++  r.SetEditCurPos(savedCursor, false, false)
++
+   local existing = findRenderStartMarker()
+   if existing then
+     r.DeleteProjectMarker(0, existing.idx, false)
+@@ -1801,7 +1816,7 @@
+     'becomes 0:00 and drop a visible marker there.')
+   if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
+ 
+-  local swsOk = reaper.SNM_SetDoubleConfigVar ~= nil
++  local swsOk = true  -- project state chunk always available; no extension needed
+   ImGui.Dummy(ctx, 0, 6)
+   if swsOk then
+     if ImGui.Button(ctx, 'Set render start at cursor', 240, 0) then
