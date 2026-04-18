@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="Melotunes Reaper Scripts">
-  <category name="Melotunes/CuePort">
+<index version="1" name="Melotunes">
+  <category name="CuePort">
     <reapack name="cueport_sync.lua" type="script" desc="CuePort Sync — Artist comments as markers">
       <metadata>
         <description>{\rtf1\ansi\deflang1033
