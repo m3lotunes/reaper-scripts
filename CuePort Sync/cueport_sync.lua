@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 2.5.0
+-- @version 2.5.1
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -14,11 +14,14 @@
 --   Usage: run from the Actions list, log in once, bind a production per .rpp,
 --   then "Kommentare synchronisieren" for subsequent updates.
 -- @changelog
+--   v2.5.1 - Render-start button now actually shifts the ruler. Writes the
+--            offset via the project state chunk (PROJOFFS line) instead of
+--            the SWS config var, which did not refresh the display. No
+--            extension required any more.
 --   v2.5.0 - One-click "Set render start at cursor" button + a visible
 --            "CP: Render start" marker dropped at ruler 0:00. Automatic
 --            re-sync after the offset changes, and a Clear button to revert
---            the offset and remove the marker. Requires SWS (falls back to
---            the manual ruler-menu instructions otherwise).
+--            the offset and remove the marker.
 --   v2.4.0 - Honour Reaper's project start offset when placing markers.
 --            Users can now set "0:00 to current edit cursor" at the render
 --            start (Right-click ruler → Change start time/measure) and the
@@ -111,7 +114,7 @@
 --   v1.0.1 - Add ReaPack metadata header so the action registers automatically
 --   v1.0.0 - Initial release
 
-local VERSION = '2.5.0'
+local VERSION = '2.5.1'
 local API_PROD    = 'https://melotunes-upload.m3lotunes.workers.dev'
 local API_PREVIEW = 'https://melotunes-preview.m3lotunes.workers.dev'
 
@@ -842,16 +845,56 @@ local function findRenderStartMarker()
 end
 
 -- Shift the project ruler so that the edit-cursor position becomes 0:00 AND
--- drop a visible "render start" marker at that spot. Requires SWS (the
--- projtimeoffs config var is only writable via SWS's SNM_SetDoubleConfigVar).
+-- drop a visible "render start" marker at that spot.
+--
+-- Reaper stores the offset in the project state chunk as a PROJOFFS line —
+-- Writing it via SWS's `projtimeoffs` config var does not refresh the ruler
+-- in some versions, so we go through the state chunk instead (works on any
+-- Reaper version, no extension required).
 -- Returns ok (bool), error (string or nil).
-local function setRenderStartAtCursor()
-  if not reaper.SNM_SetDoubleConfigVar then
-    return false, 'SWS Extension is required to set the render start automatically.'
+local function setProjectStartTimeOffset(offset)
+  local ok, chunk = reaper.GetProjectStateChunk(0, false)
+  if not ok or not chunk or chunk == '' then
+    return false, 'Could not read project state'
   end
+
+  local replaced = false
+  -- Match "PROJOFFS <first> ..." keeping any trailing fields intact.
+  local newChunk, n = chunk:gsub(
+    '(\n[ \t]*PROJOFFS[ \t]+)[-%d%.eE]+([^\n]*)',
+    function(prefix, rest)
+      return prefix .. string.format('%.8f', offset) .. rest
+    end,
+    1)
+  if n > 0 then
+    chunk = newChunk
+    replaced = true
+  end
+
+  if not replaced then
+    -- Project chunk has no PROJOFFS line yet → inject one right after the
+    -- opening <REAPER_PROJECT header line.
+    chunk = chunk:gsub(
+      '(<REAPER_PROJECT[^\n]*\n)',
+      '%1  PROJOFFS ' .. string.format('%.8f', offset) .. ' 0 0\n',
+      1)
+  end
+
+  reaper.SetProjectStateChunk(chunk, false)
+  reaper.UpdateTimeline()
+  if reaper.UpdateArrange then reaper.UpdateArrange() end
+  return true
+end
+
+local function setRenderStartAtCursor()
   local cursor = r.GetCursorPosition()
   r.Undo_BeginBlock()
-  reaper.SNM_SetDoubleConfigVar('projtimeoffs', cursor)
+
+  local ok, err = setProjectStartTimeOffset(cursor)
+  if not ok then
+    r.Undo_EndBlock('CuePort: Set render start (failed)', -1)
+    return false, err
+  end
 
   local existing = findRenderStartMarker()
   local color = cpStartMarkerColor()
@@ -870,9 +913,7 @@ end
 -- render-start marker we placed.
 local function clearRenderStart()
   r.Undo_BeginBlock()
-  if reaper.SNM_SetDoubleConfigVar then
-    reaper.SNM_SetDoubleConfigVar('projtimeoffs', 0)
-  end
+  setProjectStartTimeOffset(0)
   local existing = findRenderStartMarker()
   if existing then
     r.DeleteProjectMarker(0, existing.idx, false)
@@ -1801,7 +1842,7 @@ local function renderBound()
     'becomes 0:00 and drop a visible marker there.')
   if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
 
-  local swsOk = reaper.SNM_SetDoubleConfigVar ~= nil
+  local swsOk = true  -- project state chunk always available; no extension needed
   ImGui.Dummy(ctx, 0, 6)
   if swsOk then
     if ImGui.Button(ctx, 'Set render start at cursor', 240, 0) then
