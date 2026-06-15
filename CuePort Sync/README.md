@@ -13,6 +13,10 @@ project markers, with a hover tooltip showing the full comment.
   at a glance. Your own markers stay untouched.
 - **Hover tooltip** shows the author + timestamp + full comment text when you
   move the mouse near a marker.
+- **Waveform block** in the main window (collapsible) draws the active
+  version's waveform with the artist comments overlaid as markers — hover a
+  marker to read the comment. Falls back gracefully when no waveform or track
+  length is stored for the version yet.
 - **Floating pill** with a popup menu for one-click sync / change project /
   open the main window.
 - **Per-project binding** stored in the `.rpp` via `SetProjExtState`, so every
