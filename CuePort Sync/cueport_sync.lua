@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.1.0
+-- @version 1.2.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -16,13 +16,18 @@
 --   Usage: run the action, click "Connect to CuePort", approve in the
 --   browser, pick a production and press "Sync comments".
 -- @changelog
+--   v1.2.0 - Waveform block now shows the live DAW play/edit cursor and is
+--            clickable: click or drag to move the DAW cursor (and seek
+--            playback) to that spot. Added Play/Pause + Stop transport
+--            buttons. Cursor + seek follow the same render-start alignment as
+--            the comment markers.
 --   v1.1.0 - Add a collapsible waveform block to the main window: the active
 --            version's peaks are drawn with the artist comments overlaid as
 --            markers (hover to read). Falls back gracefully when no waveform
 --            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.1.0'
+local VERSION = '1.2.0'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
@@ -1713,7 +1718,15 @@ local function ensureWaveformLoaded()
 end
 
 -- Collapsible waveform block: draws the ~150-point peak strip for the active
--- version and overlays the artist comment markers on top (hover to read).
+-- version, overlays the artist comment markers (hover to read) and the live
+-- DAW play/edit cursor. Click the strip to move the DAW cursor (and seek
+-- playback) to that spot. A small transport row offers Play/Pause + Stop.
+--
+-- Time mapping (kept in lock-step with syncCommentsToMarkers): a comment at
+-- audio-time T is placed at internal Reaper position `T - offset`, where
+-- `offset = getProjectStartOffset()`. So:
+--     audio_time   = internal_pos + offset
+--     internal_pos = audio_time   - offset
 local function renderWaveform()
   local hdrFlags = (ImGui.TreeNodeFlags_DefaultOpen and ImGui.TreeNodeFlags_DefaultOpen()) or 0
   if not ImGui.CollapsingHeader(ctx, 'Waveform', nil, hdrFlags) then return end
@@ -1731,15 +1744,28 @@ local function renderWaveform()
   end
 
   local comments = loadCommentsCache()
+  local offset   = getProjectStartOffset()
 
+  -- ── Transport row ───────────────────────────────────────────────────────
+  ImGui.Dummy(ctx, 0, 4)
+  local playState = r.GetPlayState()
+  local playing   = (playState & 1) == 1
+  local paused    = (playState & 2) == 2
+  if ImGui.Button(ctx, (playing and not paused) and 'Pause' or 'Play', 80, 0) then
+    if playing and not paused then r.OnPauseButton() else r.OnPlayButton() end
+  end
+  ImGui.SameLine(ctx)
+  if ImGui.Button(ctx, 'Stop', 70, 0) then r.OnStopButton() end
+
+  -- ── Waveform strip (clickable) ──────────────────────────────────────────
   ImGui.Dummy(ctx, 0, 4)
   local w = ImGui.GetContentRegionAvail(ctx)
   if not w or w < 40 then w = 40 end
   local h = 86
-  local x0, y0 = ImGui.GetCursorScreenPos(ctx)
-  local x1, y1 = x0 + w, y0 + h
-  -- Reserve the area so it participates in layout + mouse handling.
-  ImGui.Dummy(ctx, w, h)
+  local clicked = ImGui.InvisibleButton(ctx, '##cpwavehit', w, h)
+  local x0, y0  = ImGui.GetItemRectMin(ctx)
+  local x1, y1  = ImGui.GetItemRectMax(ctx)
+  local hovered = ImGui.IsItemHovered(ctx)
 
   local dl = ImGui.GetWindowDrawList(ctx)
   ImGui.DrawList_AddRectFilled(dl, x0, y0, x1, y1, CP_COLORS.bg, 6)
@@ -1748,6 +1774,7 @@ local function renderWaveform()
   local pad     = 6
   local innerX0 = x0 + pad
   local innerW  = (x1 - pad) - innerX0
+  if innerW < 1 then innerW = 1 end
   local midY    = y0 + h / 2
   local maxHalf = (h / 2) - pad
   local n       = #peaks
@@ -1765,7 +1792,6 @@ local function renderWaveform()
   -- Comment markers on top — only when we know the track length.
   local hoverMarker = nil
   local mx, my      = ImGui.GetMousePos(ctx)
-  local insideRect  = mx >= x0 and mx <= x1 and my >= y0 and my <= y1
   if duration and duration > 0 then
     local bestD = 7  -- px hit radius
     for _, c in ipairs(comments) do
@@ -1776,12 +1802,34 @@ local function renderWaveform()
         local cx = innerX0 + frac * innerW
         ImGui.DrawList_AddLine(dl, cx, y0 + 2, cx, y1 - 2, CP_COLORS.accentStrong, 1.5)
         ImGui.DrawList_AddTriangleFilled(dl, cx - 4, y0 + 2, cx + 4, y0 + 2, cx, y0 + 9, CP_COLORS.accentStrong)
-        if insideRect then
+        if hovered then
           local d = math.abs(mx - cx)
           if d < bestD then bestD = d; hoverMarker = c end
         end
       end
     end
+  end
+
+  -- Live DAW play/edit cursor on top of everything.
+  if duration and duration > 0 then
+    local pos    = playing and r.GetPlayPosition() or r.GetCursorPosition()
+    local atime  = pos + offset                 -- internal → audio time
+    local frac   = atime / duration
+    if frac >= 0 and frac <= 1 then
+      local cx = innerX0 + frac * innerW
+      ImGui.DrawList_AddLine(dl, cx, y0 + 1, cx, y1 - 1, 0xFFFFFFFF, 2.0)
+    end
+  end
+
+  -- Click/drag the strip → move the DAW cursor there. While dragging, the
+  -- edit cursor follows live (no replay jump); on release we also seek
+  -- playback so a playing transport jumps to the clicked spot in sync.
+  local active = ImGui.IsItemActive(ctx)
+  if duration and duration > 0 and (active or clicked) then
+    local frac = (mx - innerX0) / innerW
+    if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+    local internalPos = (frac * duration) - offset   -- audio time → internal
+    r.SetEditCurPos(internalPos, true, clicked)       -- moveview; seekplay on release
   end
 
   if hoverMarker then
@@ -1799,10 +1847,10 @@ local function renderWaveform()
   if duration and duration > 0 then
     local cnt = 0
     for _, c in ipairs(comments) do if c.timestamp then cnt = cnt + 1 end end
-    ImGui.TextDisabled(ctx, string.format('Length %s  ·  %d comment%s  ·  hover a marker to read it',
+    ImGui.TextDisabled(ctx, string.format('Length %s  ·  %d comment%s  ·  click to seek · hover a marker to read it',
       formatTimestamp(duration), cnt, cnt == 1 and '' or 's'))
   else
-    ImGui.TextDisabled(ctx, 'Track length unknown — markers hidden. Re-upload the version in CuePort to store it.')
+    ImGui.TextDisabled(ctx, 'Track length unknown — cursor + markers hidden. Re-upload the version in CuePort to store it.')
   end
 end
 

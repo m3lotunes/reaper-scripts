@@ -15,8 +15,10 @@ project markers, with a hover tooltip showing the full comment.
   move the mouse near a marker.
 - **Waveform block** in the main window (collapsible) draws the active
   version's waveform with the artist comments overlaid as markers — hover a
-  marker to read the comment. Falls back gracefully when no waveform or track
-  length is stored for the version yet.
+  marker to read the comment. Shows the live DAW play/edit cursor; click or
+  drag the strip to move the DAW cursor (and seek playback) to that spot, and
+  use the built-in Play/Pause + Stop buttons. Falls back gracefully when no
+  waveform or track length is stored for the version yet.
 - **Floating pill** with a popup menu for one-click sync / change project /
   open the main window.
 - **Per-project binding** stored in the `.rpp` via `SetProjExtState`, so every
