@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.0.0
+-- @version 1.1.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -16,9 +16,13 @@
 --   Usage: run the action, click "Connect to CuePort", approve in the
 --   browser, pick a production and press "Sync comments".
 -- @changelog
+--   v1.1.0 - Add a collapsible waveform block to the main window: the active
+--            version's peaks are drawn with the artist comments overlaid as
+--            markers (hover to read). Falls back gracefully when no waveform
+--            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.0.0'
+local VERSION = '1.1.0'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
@@ -448,6 +452,10 @@ local state = {
   lastSyncResult = nil,
   lastSyncAt = nil,
 
+  -- Waveform (peaks + duration for the active version, from /reaper/comments)
+  waveform = nil,        -- { peaks = {float...}, duration = number|nil }
+  waveformForId = nil,   -- productionId the cached waveform belongs to
+
   -- Error
   errorMsg = nil,
 
@@ -707,6 +715,26 @@ end
 -- Cache of { id, timestamp, text, author } stored in ProjExtState as JSON so
 -- we can recover the full content at hover time after a script reload.
 local COMMENTS_CACHE_KEY = 'comments_cache'
+-- Cache of { peaks = {float...}, duration = number } for the active version so
+-- the waveform block can render immediately when the window is reopened,
+-- without forcing a re-sync first.
+local WAVEFORM_CACHE_KEY = 'waveform_cache'
+
+local function saveWaveformCache(peaks, duration)
+  setProjExt(WAVEFORM_CACHE_KEY, json.encode({
+    peaks = peaks or {},
+    duration = duration,
+  }))
+end
+
+local function loadWaveformCache()
+  local raw = getProjExt(WAVEFORM_CACHE_KEY)
+  if not raw or raw == '' then return nil end
+  local ok, parsed = pcall(json.decode, raw)
+  if not ok or type(parsed) ~= 'table' then return nil end
+  if type(parsed.peaks) ~= 'table' then parsed.peaks = {} end
+  return parsed
+end
 
 -- Reaper lets the user shift the displayed time origin via
 -- "Change start time/measure → Set 0:00 to current edit cursor". When that
@@ -1137,12 +1165,18 @@ local function bindProduction(prod)
   state.boundProductionId = prod.id
   state.boundProduction = prod
   state.showPickerOverride = false  -- leave the picker after a successful pick
+  -- Drop the in-memory waveform so the block reloads for the new binding
+  -- (ensureWaveformLoaded picks the cache up again on the next frame).
+  state.waveform = nil
+  state.waveformForId = nil
 end
 
 local function unbindProduction()
   setProjExt('production_id', '')
   state.boundProductionId = nil
   state.boundProduction = nil
+  state.waveform = nil
+  state.waveformForId = nil
 end
 
 local function doSync()
@@ -1164,6 +1198,15 @@ local function doSync()
   local summary = syncCommentsToMarkers(comments)
   state.lastSyncResult = summary
   state.lastSyncAt = os.time()
+
+  -- Stash the waveform (peaks + duration) that came back with the comments so
+  -- the waveform block can draw it. Persist it per-project too, so it survives
+  -- a window reopen without a re-sync.
+  local peaks = (type(resp.peaks) == 'table') and resp.peaks or {}
+  local duration = (type(resp.duration) == 'number' and resp.duration > 0) and resp.duration or nil
+  state.waveform = { peaks = peaks, duration = duration }
+  state.waveformForId = state.boundProductionId
+  saveWaveformCache(peaks, duration)
   local v = resp.version
   local vLabel = v and (v.label or '?') or '?'
   local extra = ''
@@ -1654,6 +1697,115 @@ local function renderProductionPicker()
   ImGui.EndChild(ctx)
 end
 
+-- Lazy-load the persisted waveform for the current binding if we don't yet
+-- have one in memory for it (e.g. right after the window was reopened without
+-- a fresh sync).
+local function ensureWaveformLoaded()
+  if not state.boundProductionId then return end
+  if state.waveform and state.waveformForId == state.boundProductionId then return end
+  local cached = loadWaveformCache()
+  if cached then
+    state.waveform = { peaks = cached.peaks or {}, duration = cached.duration }
+  else
+    state.waveform = nil
+  end
+  state.waveformForId = state.boundProductionId
+end
+
+-- Collapsible waveform block: draws the ~150-point peak strip for the active
+-- version and overlays the artist comment markers on top (hover to read).
+local function renderWaveform()
+  local hdrFlags = (ImGui.TreeNodeFlags_DefaultOpen and ImGui.TreeNodeFlags_DefaultOpen()) or 0
+  if not ImGui.CollapsingHeader(ctx, 'Waveform', nil, hdrFlags) then return end
+
+  ensureWaveformLoaded()
+  local wf       = state.waveform
+  local peaks    = wf and wf.peaks or {}
+  local duration = wf and wf.duration or nil
+
+  if #peaks == 0 then
+    ImGui.Dummy(ctx, 0, 4)
+    ImGui.TextDisabled(ctx, 'No waveform stored for this version yet.')
+    ImGui.TextDisabled(ctx, 'Upload a version in CuePort, then Sync again.')
+    return
+  end
+
+  local comments = loadCommentsCache()
+
+  ImGui.Dummy(ctx, 0, 4)
+  local w = ImGui.GetContentRegionAvail(ctx)
+  if not w or w < 40 then w = 40 end
+  local h = 86
+  local x0, y0 = ImGui.GetCursorScreenPos(ctx)
+  local x1, y1 = x0 + w, y0 + h
+  -- Reserve the area so it participates in layout + mouse handling.
+  ImGui.Dummy(ctx, w, h)
+
+  local dl = ImGui.GetWindowDrawList(ctx)
+  ImGui.DrawList_AddRectFilled(dl, x0, y0, x1, y1, CP_COLORS.bg, 6)
+  ImGui.DrawList_AddRect(dl, x0, y0, x1, y1, CP_COLORS.border, 6)
+
+  local pad     = 6
+  local innerX0 = x0 + pad
+  local innerW  = (x1 - pad) - innerX0
+  local midY    = y0 + h / 2
+  local maxHalf = (h / 2) - pad
+  local n       = #peaks
+
+  -- Waveform bars, mirrored around the mid line.
+  for i = 1, n do
+    local p = peaks[i] or 0
+    if p < 0 then p = 0 elseif p > 1 then p = 1 end
+    local cx   = innerX0 + ((i - 0.5) / n) * innerW
+    local half = p * maxHalf
+    if half < 1 then half = 1 end
+    ImGui.DrawList_AddLine(dl, cx, midY - half, cx, midY + half, CP_COLORS.accent, 1.5)
+  end
+
+  -- Comment markers on top — only when we know the track length.
+  local hoverMarker = nil
+  local mx, my      = ImGui.GetMousePos(ctx)
+  local insideRect  = mx >= x0 and mx <= x1 and my >= y0 and my <= y1
+  if duration and duration > 0 then
+    local bestD = 7  -- px hit radius
+    for _, c in ipairs(comments) do
+      local ts = c.timestamp
+      if ts then
+        local frac = ts / duration
+        if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+        local cx = innerX0 + frac * innerW
+        ImGui.DrawList_AddLine(dl, cx, y0 + 2, cx, y1 - 2, CP_COLORS.accentStrong, 1.5)
+        ImGui.DrawList_AddTriangleFilled(dl, cx - 4, y0 + 2, cx + 4, y0 + 2, cx, y0 + 9, CP_COLORS.accentStrong)
+        if insideRect then
+          local d = math.abs(mx - cx)
+          if d < bestD then bestD = d; hoverMarker = c end
+        end
+      end
+    end
+  end
+
+  if hoverMarker then
+    ImGui.BeginTooltip(ctx)
+    ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.accent)
+    ImGui.Text(ctx, (hoverMarker.author or 'Artist') .. '  ·  ' .. formatTimestamp(hoverMarker.timestamp or 0))
+    ImGui.PopStyleColor(ctx)
+    if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 320) end
+    ImGui.Text(ctx, hoverMarker.text or '')
+    if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
+    ImGui.EndTooltip(ctx)
+  end
+
+  ImGui.Dummy(ctx, 0, 2)
+  if duration and duration > 0 then
+    local cnt = 0
+    for _, c in ipairs(comments) do if c.timestamp then cnt = cnt + 1 end end
+    ImGui.TextDisabled(ctx, string.format('Length %s  ·  %d comment%s  ·  hover a marker to read it',
+      formatTimestamp(duration), cnt, cnt == 1 and '' or 's'))
+  else
+    ImGui.TextDisabled(ctx, 'Track length unknown — markers hidden. Re-upload the version in CuePort to store it.')
+  end
+end
+
 local function renderBound()
   local p = state.boundProduction
   ImGui.Text(ctx, 'Connected to:')
@@ -1678,6 +1830,10 @@ local function renderBound()
     ImGui.TextDisabled(ctx, state.syncStatus or '')
     ImGui.TextDisabled(ctx, 'Last sync: ' .. formatRelTime(state.lastSyncAt))
   end
+
+  -- ── Waveform block ──────────────────────────────────────────────────────
+  ImGui.Dummy(ctx, 0, 12)
+  renderWaveform()
 
   -- ── Render-start anchor section ─────────────────────────────────────────
   -- Lets the user tell Reaper where the render starts (== ruler 0:00) so
