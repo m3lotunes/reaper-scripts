@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.2.0
+-- @version 1.2.1
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -16,6 +16,10 @@
 --   Usage: run the action, click "Connect to CuePort", approve in the
 --   browser, pick a production and press "Sync comments".
 -- @changelog
+--   v1.2.1 - Clicking the waveform during playback now draws a faint
+--            "pending" line at the target; it clears once the play cursor
+--            reaches it (Reaper defers the seek to the next bar while playing),
+--            so the user gets immediate visual feedback that the click landed.
 --   v1.2.0 - Waveform block now shows the live DAW play/edit cursor and is
 --            clickable: click or drag to move the DAW cursor (and seek
 --            playback) to that spot. Added Play/Pause + Stop transport
@@ -27,7 +31,7 @@
 --            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.2.0'
+local VERSION = '1.2.1'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
@@ -460,6 +464,8 @@ local state = {
   -- Waveform (peaks + duration for the active version, from /reaper/comments)
   waveform = nil,        -- { peaks = {float...}, duration = number|nil }
   waveformForId = nil,   -- productionId the cached waveform belongs to
+  pendingSeekAt = nil,   -- audio-time of a click that is waiting for the play
+                         -- cursor to catch up (Reaper defers seek to next bar)
 
   -- Error
   errorMsg = nil,
@@ -1174,6 +1180,7 @@ local function bindProduction(prod)
   -- (ensureWaveformLoaded picks the cache up again on the next frame).
   state.waveform = nil
   state.waveformForId = nil
+  state.pendingSeekAt = nil
 end
 
 local function unbindProduction()
@@ -1182,6 +1189,7 @@ local function unbindProduction()
   state.boundProduction = nil
   state.waveform = nil
   state.waveformForId = nil
+  state.pendingSeekAt = nil
 end
 
 local function doSync()
@@ -1830,6 +1838,31 @@ local function renderWaveform()
     if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
     local internalPos = (frac * duration) - offset   -- audio time → internal
     r.SetEditCurPos(internalPos, true, clicked)       -- moveview; seekplay on release
+    if clicked then
+      -- During playback Reaper defers the actual jump to the next bar. Remember
+      -- the target so we can show a faint "pending" line until the play cursor
+      -- catches up; when stopped the move is immediate, so no marker is needed.
+      state.pendingSeekAt = playing and (frac * duration) or nil
+    end
+  end
+
+  -- Pending-seek line: faint mark at a clicked target the play cursor hasn't
+  -- reached yet. Clears once the cursor lands there (or playback stops).
+  if state.pendingSeekAt and duration and duration > 0 then
+    if not playing then
+      state.pendingSeekAt = nil
+    else
+      local curAudio = r.GetPlayPosition() + offset
+      if math.abs(curAudio - state.pendingSeekAt) < 0.30 then
+        state.pendingSeekAt = nil
+      else
+        local pf = state.pendingSeekAt / duration
+        if pf >= 0 and pf <= 1 then
+          local px = innerX0 + pf * innerW
+          ImGui.DrawList_AddLine(dl, px, y0 + 1, px, y1 - 1, 0xFFFFFF55, 1.5)
+        end
+      end
+    end
   end
 
   if hoverMarker then
