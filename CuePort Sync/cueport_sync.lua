@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.2.1
+-- @version 1.3.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -16,6 +16,13 @@
 --   Usage: run the action, click "Connect to CuePort", approve in the
 --   browser, pick a production and press "Sync comments".
 -- @changelog
+--   v1.3.0 - A/B compare: load the active CuePort version into a hidden
+--            reference track and toggle playback between it and your DAW mix
+--            under one synced transport. The reference bypasses the project
+--            master and plays straight to hardware outputs 1/2, so the finished
+--            bounce is heard untouched. Temporary — removed on production
+--            switch, "Remove", or script exit. Requires the server's
+--            /reaper/audio endpoint.
 --   v1.2.1 - Clicking the waveform during playback now draws a faint
 --            "pending" line at the target; it clears once the play cursor
 --            reaches it (Reaper defers the seek to the next bar while playing),
@@ -31,13 +38,15 @@
 --            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.2.1'
+local VERSION = '1.3.0'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
 local COMMENTS_TRACK_NAME    = 'Artist Comments'
 local TRACK_MARKER_EXT_KEY   = 'P_EXT:cueport_track'
 local ITEM_FB_ID_EXT_KEY     = 'P_EXT:cueport_feedback_id'
+local AB_TRACK_NAME          = 'CuePort A/B'
+local AB_TRACK_EXT_KEY       = 'P_EXT:cueport_ab_ref'   -- marks the hidden A/B reference track
 local MAX_ITEM_LENGTH        = 2.0
 local COMMENT_ITEM_COLOR     = 0x7B45C8
 
@@ -466,6 +475,20 @@ local state = {
   waveformForId = nil,   -- productionId the cached waveform belongs to
   pendingSeekAt = nil,   -- audio-time of a click that is waiting for the play
                          -- cursor to catch up (Reaper defers seek to next bar)
+  versionFilename = nil, -- filename of the active version (for the temp ext)
+
+  -- A/B compare: hidden reference track playing the CuePort version straight
+  -- to the soundcard (bypassing the project master), toggled against the DAW.
+  ab = {
+    loaded     = false,  -- reference track + item exist
+    onCuePort  = false,  -- true = hearing CuePort version, false = hearing DAW
+    forId      = nil,    -- productionId the loaded reference belongs to
+    downloading= false,  -- a download/build is in progress
+    pendingLoad= false,  -- click queued; do the blocking work next frame
+    frameShown = false,  -- the "loading…" frame has been painted once
+    status     = nil,    -- last status / error string
+    tempPath   = nil,    -- temp audio file on disk
+  },
 
   -- Error
   errorMsg = nil,
@@ -731,10 +754,11 @@ local COMMENTS_CACHE_KEY = 'comments_cache'
 -- without forcing a re-sync first.
 local WAVEFORM_CACHE_KEY = 'waveform_cache'
 
-local function saveWaveformCache(peaks, duration)
+local function saveWaveformCache(peaks, duration, filename)
   setProjExt(WAVEFORM_CACHE_KEY, json.encode({
     peaks = peaks or {},
     duration = duration,
+    filename = filename,
   }))
 end
 
@@ -1171,7 +1195,170 @@ local function loadProductions()
   end
 end
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- A/B COMPARE — hidden reference track (CuePort version vs DAW mix)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Downloads the active version to a temp file and plays it from a hidden track
+-- that bypasses the project master and goes straight to hardware out 1/2. A/B
+-- is then a mute-swap between that reference and the master — both run under
+-- the one transport, so they stay sample-synced. Everything is temporary:
+-- removed on production switch, window/script exit, or the "Remove A/B" button.
+
+local function abTempPath()
+  local ext = 'wav'
+  local fn = state.versionFilename
+  if fn then
+    local e = fn:match('%.([%w]+)%s*$')
+    if e then ext = e:lower() end
+  end
+  return tmpPath('abref.' .. ext)
+end
+
+-- Blocking download of the active version's audio to destPath via curl.
+-- Returns ok(bool), err(string|nil).
+local function abDownload(destPath)
+  local cfgPath = tmpPath('abdl.cfg')
+  local cfg = {
+    '--silent', '--show-error', '--location',
+    '--connect-timeout 15', '--max-time 300',
+  }
+  for k, v in pairs(authHeaders()) do
+    cfg[#cfg+1] = 'header = "' .. k .. ': ' .. v:gsub('"', '\\"') .. '"'
+  end
+  cfg[#cfg+1] = 'output = "' .. destPath .. '"'
+  cfg[#cfg+1] = 'write-out = "\\n__CUEPORT_STATUS__:%{http_code}"'
+  cfg[#cfg+1] = 'url = "' .. state.apiUrl .. '/reaper/audio?production_id=' ..
+                (state.boundProductionId or '') .. '"'
+  if not writeFile(cfgPath, table.concat(cfg, '\n')) then
+    return false, 'Could not write download config'
+  end
+  local raw = r.ExecProcess(curlBinary() .. ' --config "' .. cfgPath .. '"', 305000)
+  local _, out = parseExecOutput(raw)
+  deleteFile(cfgPath)
+  local status = tonumber((out or ''):match('__CUEPORT_STATUS__:(%d+)'))
+  if status ~= 200 then
+    return false, 'Download failed (HTTP ' .. tostring(status or '?') .. ')'
+  end
+  local f = io.open(destPath, 'rb')
+  if not f then return false, 'Downloaded file missing' end
+  local sz = f:seek('end'); f:close()
+  if not sz or sz < 1024 then return false, 'Downloaded file looks empty' end
+  return true
+end
+
+local function findABTrack()
+  for i = 0, r.CountTracks(0) - 1 do
+    local t = r.GetTrack(0, i)
+    local _, m = r.GetSetMediaTrackInfo_String(t, AB_TRACK_EXT_KEY, '', false)
+    if m == '1' then return t end
+  end
+  return nil
+end
+
+-- Mute-swap: reference audible vs master audible.
+local function abApplyState(onCuePort)
+  local ref = findABTrack()
+  local master = r.GetMasterTrack(0)
+  if ref then r.SetMediaTrackInfo_Value(ref, 'B_MUTE', onCuePort and 0 or 1) end
+  if master then r.SetMediaTrackInfo_Value(master, 'B_MUTE', onCuePort and 1 or 0) end
+  state.ab.onCuePort = onCuePort
+end
+
+-- Build (or rebuild) the hidden reference track from a downloaded file.
+local function abBuildTrack(filePath)
+  local old = findABTrack()
+  if old then r.DeleteTrack(old) end
+
+  local idx = r.CountTracks(0)
+  r.InsertTrackAtIndex(idx, false)
+  local tr = r.GetTrack(0, idx)
+  if not tr then return false, 'Could not create track' end
+
+  r.GetSetMediaTrackInfo_String(tr, 'P_NAME', AB_TRACK_NAME, true)
+  r.GetSetMediaTrackInfo_String(tr, AB_TRACK_EXT_KEY, '1', true)
+  -- Background track: hidden from arrange + mixer.
+  r.SetMediaTrackInfo_Value(tr, 'B_SHOWINTCP', 0)
+  r.SetMediaTrackInfo_Value(tr, 'B_SHOWINMIXER', 0)
+  -- Bypass the master/parent send so the reference does NOT run through the
+  -- project's master chain…
+  r.SetMediaTrackInfo_Value(tr, 'B_MAINSEND', 0)
+  -- …and instead route straight to hardware outputs 1/2.
+  local sendIdx = r.CreateTrackSend(tr, nil)  -- nil dest = hardware output send
+  if sendIdx and sendIdx >= 0 then
+    r.SetTrackSendInfo_Value(tr, 1, sendIdx, 'I_DSTCHAN', 0)  -- 0 = stereo outs 1/2
+  end
+
+  -- Place the audio so audio-time 0 lands at internal position -offset (the
+  -- render-start), matching the comment markers + waveform mapping.
+  local offset = getProjectStartOffset()
+  local src = r.PCM_Source_CreateFromFile(filePath)
+  if not src then r.DeleteTrack(tr); return false, 'Could not read audio file' end
+  local item = r.AddMediaItemToTrack(tr)
+  local take = r.AddTakeToMediaItem(item)
+  r.SetMediaItemTake_Source(take, src)
+  r.SetMediaItemInfo_Value(item, 'D_POSITION', -offset)
+  r.SetMediaItemInfo_Value(item, 'D_LENGTH', r.GetMediaSourceLength(src) or 0)
+  r.UpdateItemInProject(item)
+  return true
+end
+
+-- Keep the reference item aligned when the render-start offset changes.
+local function abReposition()
+  local tr = findABTrack()
+  if not tr then return end
+  local item = r.GetTrackMediaItem(tr, 0)
+  if not item then return end
+  r.SetMediaItemInfo_Value(item, 'D_POSITION', -getProjectStartOffset())
+  r.UpdateItemInProject(item)
+  r.UpdateTimeline()
+end
+
+-- Tear down: remove the reference track, unmute master, drop the temp file.
+local function abRemove()
+  local tr = findABTrack()
+  if tr then
+    r.Undo_BeginBlock()
+    r.DeleteTrack(tr)
+    r.Undo_EndBlock('CuePort: remove A/B reference', -1)
+  end
+  local master = r.GetMasterTrack(0)
+  if master then r.SetMediaTrackInfo_Value(master, 'B_MUTE', 0) end
+  if state.ab.tempPath then deleteFile(state.ab.tempPath) end
+  state.ab.loaded = false
+  state.ab.onCuePort = false
+  state.ab.forId = nil
+  state.ab.tempPath = nil
+  r.UpdateTimeline()
+end
+
+-- Perform the queued download + build. Called from the loop AFTER one painted
+-- "loading…" frame, so the UI shows feedback before the blocking curl call.
+local function abDoLoad()
+  if state.ab.loaded then abRemove() end
+  local dest = abTempPath()
+  local ok, err = abDownload(dest)
+  if not ok then
+    state.ab.downloading = false
+    state.ab.status = err or 'Download failed'
+    return
+  end
+  local bok, berr = abBuildTrack(dest)
+  if not bok then
+    state.ab.downloading = false
+    state.ab.status = berr or 'Could not build reference track'
+    deleteFile(dest)
+    return
+  end
+  state.ab.tempPath = dest
+  state.ab.loaded = true
+  state.ab.forId = state.boundProductionId
+  state.ab.downloading = false
+  state.ab.status = nil
+  abApplyState(false)  -- start on the DAW mix
+end
+
 local function bindProduction(prod)
+  abRemove()  -- a previous production's reference must not linger
   setProjExt('production_id', prod.id)
   state.boundProductionId = prod.id
   state.boundProduction = prod
@@ -1184,6 +1371,7 @@ local function bindProduction(prod)
 end
 
 local function unbindProduction()
+  abRemove()
   setProjExt('production_id', '')
   state.boundProductionId = nil
   state.boundProduction = nil
@@ -1219,7 +1407,8 @@ local function doSync()
   local duration = (type(resp.duration) == 'number' and resp.duration > 0) and resp.duration or nil
   state.waveform = { peaks = peaks, duration = duration }
   state.waveformForId = state.boundProductionId
-  saveWaveformCache(peaks, duration)
+  state.versionFilename = (resp.version and resp.version.filename) or state.versionFilename
+  saveWaveformCache(peaks, duration, state.versionFilename)
   local v = resp.version
   local vLabel = v and (v.label or '?') or '?'
   local extra = ''
@@ -1719,6 +1908,9 @@ local function ensureWaveformLoaded()
   local cached = loadWaveformCache()
   if cached then
     state.waveform = { peaks = cached.peaks or {}, duration = cached.duration }
+    if cached.filename and not state.versionFilename then
+      state.versionFilename = cached.filename
+    end
   else
     state.waveform = nil
   end
@@ -1887,6 +2079,55 @@ local function renderWaveform()
   end
 end
 
+-- A/B compare controls: load the CuePort version into a hidden reference track
+-- and toggle between hearing it (straight to outputs 1/2) and the DAW mix.
+local function renderABCompare()
+  if not state.boundProductionId then return end
+  ImGui.Dummy(ctx, 0, 6)
+
+  if state.ab.downloading then
+    ImGui.TextDisabled(ctx, 'Loading A/B reference… this can take a few seconds.')
+    return
+  end
+
+  local loaded = state.ab.loaded and state.ab.forId == state.boundProductionId
+  if not loaded then
+    if not state.versionFilename then
+      ImGui.TextDisabled(ctx, 'A/B compare: press "Sync comments" once to enable it.')
+      return
+    end
+    if ImGui.Button(ctx, 'Load A/B compare', 200, 0) then
+      state.ab.downloading = true
+      state.ab.pendingLoad = true
+      state.ab.frameShown  = false
+      state.ab.status      = nil
+    end
+    ImGui.SameLine(ctx)
+    ImGui.TextDisabled(ctx, 'your mix vs the CuePort version')
+    if state.ab.status then
+      ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.danger)
+      if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 460) end
+      ImGui.Text(ctx, state.ab.status)
+      if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
+      ImGui.PopStyleColor(ctx)
+    end
+    return
+  end
+
+  -- Loaded → A/B toggle. Button shows what you're hearing; click flips it.
+  local onCue = state.ab.onCuePort
+  if onCue then ImGui.PushStyleColor(ctx, ImGui.Col_Button(), CP_COLORS.accentStrong) end
+  local label = onCue and 'Hearing: CuePort version  →  switch to your mix'
+                      or  'Hearing: your DAW mix  →  switch to CuePort'
+  if ImGui.Button(ctx, label, 320, 0) then
+    abApplyState(not onCue)
+  end
+  if onCue then ImGui.PopStyleColor(ctx) end
+  ImGui.SameLine(ctx)
+  if ImGui.SmallButton(ctx, 'Remove') then abRemove() end
+  ImGui.TextDisabled(ctx, 'CuePort plays direct to outputs 1/2 (bypasses your master chain).')
+end
+
 local function renderBound()
   local p = state.boundProduction
   ImGui.Text(ctx, 'Connected to:')
@@ -1915,6 +2156,7 @@ local function renderBound()
   -- ── Waveform block ──────────────────────────────────────────────────────
   ImGui.Dummy(ctx, 0, 12)
   renderWaveform()
+  renderABCompare()
 
   -- ── Render-start anchor section ─────────────────────────────────────────
   -- Lets the user tell Reaper where the render starts (== ruler 0:00) so
@@ -1939,6 +2181,8 @@ local function renderBound()
       local ok, err = setRenderStartAtCursor()
       if ok then
         state.errorMsg = nil
+        -- Move the A/B reference with the new offset so it stays aligned.
+        abReposition()
         -- Re-sync right away so existing markers get repositioned against
         -- the new offset.
         if state.boundProductionId and not state.syncInProgress then
@@ -1951,6 +2195,7 @@ local function renderBound()
     ImGui.SameLine(ctx)
     if ImGui.SmallButton(ctx, 'Clear') then
       clearRenderStart()
+      abReposition()
       if state.boundProductionId and not state.syncInProgress then
         doSync()
       end
@@ -2320,6 +2565,18 @@ local function loop()
   -- Poll pairing if active
   if state.screen == 'pairing' then pollPairing() end
 
+  -- A/B deferred load: let one "loading…" frame paint, THEN run the blocking
+  -- download + track build (curl can freeze the UI for a couple of seconds).
+  if state.ab.pendingLoad then
+    if state.ab.frameShown then
+      state.ab.pendingLoad = false
+      state.ab.frameShown = false
+      abDoLoad()
+    else
+      state.ab.frameShown = true
+    end
+  end
+
   ImGui.PushFont(ctx, FONT, FONT_SIZE)
 
   -- Hover tooltip is always on and runs even when the main window is hidden —
@@ -2371,6 +2628,9 @@ end
 -- Cleanup on any kind of exit (manual Beenden, Reaper shutdown, script replace)
 r.atexit(function()
   pcall(clearInstanceHeartbeat)
+  -- A/B reference is temporary — remove the hidden track + unmute master so we
+  -- never leave the project in a muted/odd state after the script stops.
+  pcall(abRemove)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════

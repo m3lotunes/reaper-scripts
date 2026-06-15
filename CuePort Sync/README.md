@@ -19,6 +19,12 @@ project markers, with a hover tooltip showing the full comment.
   drag the strip to move the DAW cursor (and seek playback) to that spot, and
   use the built-in Play/Pause + Stop buttons. Falls back gracefully when no
   waveform or track length is stored for the version yet.
+- **A/B compare** loads the active CuePort version into a hidden reference
+  track and toggles playback between it and your DAW mix under one synced
+  transport. The reference **bypasses the project master** and plays straight
+  to hardware outputs 1/2, so the finished bounce is heard untouched. It is
+  temporary — removed on production switch, the "Remove" button, or script
+  exit. (Press **Sync comments** once first so the version is known.)
 - **Floating pill** with a popup menu for one-click sync / change project /
   open the main window.
 - **Per-project binding** stored in the `.rpp` via `SetProjExtState`, so every
