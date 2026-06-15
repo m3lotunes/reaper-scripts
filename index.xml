@@ -38,6 +38,13 @@ Comments are placed relative to the start of the rendered audio. Use the in-app 
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
+      <version name="1.2.0" author="CuePort" time="2026-06-15T21:10:00Z">
+        <changelog><![CDATA[
+v1.2.0 — Waveform now shows the live DAW play/edit cursor and is clickable: click or drag to move the DAW cursor (and seek playback) to that spot. Added Play/Pause + Stop transport buttons.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
       <version name="1.1.0" author="CuePort" time="2026-06-15T12:00:00Z">
         <changelog><![CDATA[
 v1.1.0 — Waveform block in the main window: the active version's peaks are drawn with the artist comments overlaid as markers (hover to read). Graceful fallback when no waveform/length is stored.
