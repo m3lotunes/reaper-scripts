@@ -77,10 +77,18 @@ Open the main window → top-right **Settings** button:
 
 ## Under the hood
 
-- One self-contained Lua file, ~2000 lines including a small inline JSON
+- One self-contained Lua file, ~2500 lines including a small inline JSON
   parser.
 - HTTP via `curl` through `reaper.ExecProcess` (cross-platform).
 - UI via ReaImGui; non-dockable windows for a tool-like feel.
 - Markers carry a uniform color; comment metadata (author, text) is cached
   in `ProjExtState`, not in the marker name, so the ruler stays clean.
+- The waveform is drawn from the `peaks` + `duration` that ship with
+  `GET /reaper/comments`; it's also cached in `ProjExtState` so the block
+  renders on reopen without a re-sync.
+- A/B compare downloads the active version via `GET /reaper/audio` (curl to a
+  temp file) and plays it from a hidden track that bypasses the master
+  (`B_MAINSEND=0`) with a hardware-output send to outs 1/2. A/B is a mute-swap
+  between that reference and the master, under one transport. The track + temp
+  file are removed on production switch / "Remove" / script exit.
 - Single-instance guard using a short-lived heartbeat in global `ExtState`.
