@@ -38,7 +38,7 @@
 --            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.3.0'
+local VERSION = '1.4.0'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'

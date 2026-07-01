@@ -38,6 +38,13 @@ Comments are placed relative to the start of the rendered audio. Use the in-app 
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
+      <version name="1.4.0" author="CuePort" time="2026-07-01T12:00:00Z">
+        <changelog><![CDATA[
+v1.4.0 — Dockable main window: drag it into any Reaper docker or toggle it from Settings > Window; the docked position is remembered between sessions. New "Start in background" option (Settings > Startup) so auto-start launches without popping the main window open.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
       <version name="1.3.0" author="CuePort" time="2026-06-15T22:00:00Z">
         <changelog><![CDATA[
 v1.3.0 — A/B compare: load the active CuePort version into a hidden reference track and toggle playback between it and your DAW mix under one synced transport. The reference bypasses the project master and plays straight to hardware outputs 1/2. Temporary — removed on production switch, "Remove", or script exit.
