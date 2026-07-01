@@ -38,7 +38,7 @@
 --            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.4.0'
+local VERSION = '1.5.0'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
@@ -1704,6 +1704,26 @@ local function renderSettings()
   if fmChanged then setFloatingMenuEnabled(fmVal) end
   ImGui.TextDisabled(ctx, 'Small quick-access window with Sync + Open buttons.')
 
+  if state.floatingMenuEnabled then
+    if HAS_JS then
+      -- Attach-to-transport mode: the pill is drawn straight onto Reaper's
+      -- transport (like GridBox) instead of floating as its own window.
+      local paEnabled = getGlobalExt('pill_attach') == '1'
+      local paChanged, paVal = ImGui.Checkbox(ctx, 'Attach to transport (like GridBox)', paEnabled)
+      if paChanged then setGlobalExt('pill_attach', paVal and '1' or '0') end
+      ImGui.TextDisabled(ctx, 'Sits inside the transport — drag to move, click for the menu, right-click to detach.')
+      if paEnabled then
+        if ImGui.SmallButton(ctx, 'Reset position') then state.pillResetPos = true end
+        ImGui.SameLine(ctx)
+        ImGui.TextDisabled(ctx, 'Moves it back to the left edge of the transport.')
+      end
+    else
+      ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.textDim)
+      ImGui.Text(ctx, 'Attach to transport needs the JS_ReaScriptAPI extension.')
+      ImGui.PopStyleColor(ctx)
+    end
+  end
+
   ImGui.Dummy(ctx, 0, 10)
   ImGui.Separator(ctx)
   ImGui.Dummy(ctx, 0, 4)
@@ -2451,9 +2471,307 @@ local function truncate(s, n)
   return s:sub(1, n - 1) .. '…'
 end
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- TRANSPORT-ATTACHED PILL (js_ReaScriptAPI, GridBox-style)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Instead of a floating ImGui window, draw the pill as a LICE bitmap and
+-- composite it straight onto Reaper's Transport window (JS_Composite), so it
+-- lives *inside* the transport and can be dragged around there. Mouse clicks on
+-- the pill are captured with JS_WindowMessage_Intercept (only while hovering it,
+-- so the rest of the transport stays clickable). Requires js_ReaScriptAPI.
+
+local PILL_TRANSPORT_TITLE = (r.JS_Localize and r.JS_Localize('Transport', 'common')) or 'Transport'
+local PILL_MOVE_CURSOR = r.JS_Mouse_LoadCursor and r.JS_Mouse_LoadCursor(32646) or nil
+local PILL_MSGS = {
+  'WM_SETCURSOR', 'WM_LBUTTONDOWN', 'WM_LBUTTONUP', 'WM_RBUTTONDOWN', 'WM_RBUTTONUP',
+}
+-- Colors as 0xRRGGBB (alpha added at draw time)
+local PILL_BG     = 0x1E1E22
+local PILL_BORDER = 0x3A3A3D
+local PILL_TEXT   = 0xE8E8EA
+local PILL_ACCENT = 0xB088E0
+
+local pill = { box = {}, ts = {}, intercepting = false }
+
+local function pillAttachActive()
+  return HAS_JS and state.floatingMenuEnabled and state.token
+     and getGlobalExt('pill_attach') == '1'
+end
+
+local function pillClamp()
+  if not (pill.ww and pill.wh) then return end
+  local w, h = pill.box.w, pill.box.h
+  pill.box.x = math.max(0, math.min(pill.ww - w, pill.box.x))
+  pill.box.y = math.max(0, math.min(pill.wh - h, pill.box.y))
+end
+
+-- Filled rounded rectangle (corner circles + rects), like GridBox's DrawRect.
+local function pillFillRound(bm, x, y, w, h, rad, color, a)
+  rad = math.min(rad, math.floor(h / 2) - 1, math.floor(w / 2) - 1)
+  if rad < 1 then r.JS_LICE_FillRect(bm, x, y, w, h, color, a, ''); return end
+  local FC = r.JS_LICE_FillCircle
+  FC(bm, x + rad,         y + rad,         rad, color, a, '', true)
+  FC(bm, x + w - rad - 1, y + rad,         rad, color, a, '', true)
+  FC(bm, x + w - rad - 1, y + h - rad - 1, rad, color, a, '', true)
+  FC(bm, x + rad,         y + h - rad - 1, rad, color, a, '', true)
+  r.JS_LICE_FillRect(bm, x + rad, y,         w - 2 * rad, h,           color, a, '')
+  r.JS_LICE_FillRect(bm, x,       y + rad,   rad,         h - 2 * rad, color, a, '')
+  r.JS_LICE_FillRect(bm, x + w - rad, y + rad, rad,       h - 2 * rad, color, a, '')
+end
+
+local function pillDrawBitmap()
+  local w, h = pill.box.w, pill.box.h
+  if pill.bitmap then r.JS_LICE_DestroyBitmap(pill.bitmap) end
+  pill.bitmap = r.JS_LICE_CreateBitmap(true, w, h)
+  r.JS_LICE_Clear(pill.bitmap, 0x00000000)
+
+  local A = 0xFF000000
+  local rad = math.floor(h / 2)  -- fully rounded → pill shape
+  pillFillRound(pill.bitmap, 0, 0, w, h, rad, PILL_BG | A, 1)
+  r.JS_LICE_RoundRect(pill.bitmap, 0, 0, w - 1, h - 1, rad, PILL_BORDER | A, 1, '', true)
+
+  -- Accent dot
+  local dotR = math.max(3, h // 5)
+  local dotCx = 7 + dotR
+  r.JS_LICE_FillCircle(pill.bitmap, dotCx, h // 2, dotR, PILL_ACCENT | A, 1, '', true)
+
+  -- Font
+  if not pill.font then pill.font = r.JS_LICE_CreateFont() end
+  local fsize = math.max(9, math.floor(h * 0.55))
+  if fsize ~= pill.fontSize then
+    pill.fontSize = fsize
+    local gdi = r.JS_GDI_CreateFont(fsize, 0, 0, 0, 0, 0, 'Arial')
+    r.JS_LICE_SetFontFromGDI(pill.font, gdi, '')
+    r.JS_GDI_DeleteObject(gdi)
+  end
+  r.JS_LICE_SetFontBkColor(pill.font, 0)
+  r.JS_LICE_SetFontColor(pill.font, PILL_TEXT | A)
+  local tx = dotCx + dotR + 6
+  local ty = (h - fsize) // 2 - 1
+  r.JS_LICE_DrawText(pill.bitmap, pill.font, pill.text, #pill.text, tx, ty, w, h)
+end
+
+local function pillStartIntercepts()
+  if pill.intercepting or not pill.hwnd then return end
+  for _, msg in ipairs(PILL_MSGS) do
+    r.JS_WindowMessage_Intercept(pill.hwnd, msg, false)
+  end
+  pill.intercepting = true
+end
+
+local function pillEndIntercepts()
+  if not pill.intercepting then return end
+  if pill.hwnd and r.ValidatePtr(pill.hwnd, 'HWND*') then
+    for _, msg in ipairs(PILL_MSGS) do
+      r.JS_WindowMessage_Release(pill.hwnd, msg)
+    end
+  end
+  for _, msg in ipairs(PILL_MSGS) do pill.ts[msg] = 0 end
+  pill.intercepting = false
+end
+
+local function pillTeardown()
+  pillEndIntercepts()
+  if pill.hwnd and r.ValidatePtr(pill.hwnd, 'HWND*') then
+    if pill.bitmap and r.JS_Composite_Unlink then
+      pcall(r.JS_Composite_Unlink, pill.hwnd, pill.bitmap, true)
+    end
+    pcall(r.JS_Composite_Delay, pill.hwnd, 0, 0, 0)
+    local b = pill.lastRect
+    if b then
+      r.JS_Window_InvalidateRect(pill.hwnd, b.x - 2, b.y - 2,
+        b.x + b.w + 2, b.y + b.h + 2, false)
+    end
+  end
+  if pill.bitmap then r.JS_LICE_DestroyBitmap(pill.bitmap); pill.bitmap = nil end
+  if pill.font then r.JS_LICE_DestroyFont(pill.font); pill.font = nil end
+  pill.hwnd = nil
+  pill.composited = false
+  pill.lastRect = nil
+  pill.drag = nil
+  pill.fontSize = nil
+end
+
+local function pillOpenMenu()
+  local canSync = state.boundProductionId and not state.syncInProgress
+  local syncItem = (canSync and '' or '#') ..
+    (state.syncInProgress and 'Syncing...' or 'Sync comments')
+  local showLabel = state.windowVisible and 'Close main window' or 'Open main window'
+  local menuStr = syncItem .. '|Change project...|' .. showLabel ..
+    '|Detach (use floating pill)'
+
+  local sx, sy = r.GetMousePosition()
+  gfx.init('cueport_pill_menu', 0, 0, 0, sx, sy)
+  local mh = r.JS_Window_Find('cueport_pill_menu', true)
+  if mh then
+    r.JS_Window_SetOpacity(mh, 'ALPHA', 0)
+    if not isWindows() then pcall(r.JS_Window_Show, mh, 'HIDE') end
+  end
+  gfx.x, gfx.y = 0, 0
+  local sel = gfx.showmenu(menuStr)
+  gfx.quit()
+
+  pill.menuTime = r.time_precise()
+  pill.drag = nil
+
+  if sel == 1 then
+    if canSync then doSync() end
+  elseif sel == 2 then
+    state.windowVisible = true
+    state.showPickerOverride = true
+  elseif sel == 3 then
+    state.windowVisible = not state.windowVisible
+  elseif sel == 4 then
+    setGlobalExt('pill_attach', '0')
+    pillTeardown()
+  end
+end
+
+local function pillFinishDrag()
+  if pill.drag and pill.drag.moved then
+    setGlobalExt('pill_box', table.concat(
+      {pill.box.x, pill.box.y, pill.box.w, pill.box.h}, ','))
+  end
+  pill.drag = nil
+end
+
+local function pillPeek(mcx, mcy)
+  for _, msg in ipairs(PILL_MSGS) do
+    local ret, _, time = r.JS_WindowMessage_Peek(pill.hwnd, msg)
+    if ret and time ~= (pill.ts[msg] or 0) then
+      pill.ts[msg] = time
+      if msg == 'WM_SETCURSOR' then
+        if PILL_MOVE_CURSOR then r.JS_Mouse_SetCursor(PILL_MOVE_CURSOR) end
+      elseif msg == 'WM_LBUTTONDOWN' then
+        -- Ignore clicks right after a menu closed (avoids reopening)
+        if not (pill.menuTime and r.time_precise() < pill.menuTime + 0.05) then
+          pill.drag = {mx = mcx, my = mcy, bx = pill.box.x, by = pill.box.y, moved = false}
+        end
+      elseif msg == 'WM_LBUTTONUP' then
+        if pill.drag then
+          local was_click = not pill.drag.moved
+          pillFinishDrag()
+          if was_click then pillOpenMenu() end
+        end
+      elseif msg == 'WM_RBUTTONUP' then
+        pillOpenMenu()
+      end
+    end
+  end
+end
+
+local function updateAttachedPill()
+  if not pillAttachActive() then
+    if pill.hwnd or pill.bitmap then pillTeardown() end
+    return
+  end
+
+  -- Reset position request from Settings → re-init the box to its default.
+  if state.pillResetPos then
+    state.pillResetPos = false
+    setGlobalExt('pill_box', '')
+    pill.box = {}
+    pill.composited = false
+  end
+
+  -- (Re)acquire the transport window (throttled).
+  local now = r.time_precise()
+  if not pill.hwnd or not r.ValidatePtr(pill.hwnd, 'HWND*') then
+    if not pill.lastFind or now > pill.lastFind + 0.5 then
+      pill.lastFind = now
+      pill.hwnd = r.JS_Window_Find(PILL_TRANSPORT_TITLE, true)
+      pill.composited = false
+      -- Fresh window → we hold no intercepts on it yet.
+      pill.intercepting = false
+      for _, msg in ipairs(PILL_MSGS) do pill.ts[msg] = 0 end
+    end
+    if not pill.hwnd then return end
+  end
+  if not r.JS_Window_IsVisible(pill.hwnd) then return end
+
+  local _, ww, wh = r.JS_Window_GetClientSize(pill.hwnd)
+  pill.ww, pill.wh = ww, wh
+
+  -- Initialise the box on first run (restore saved position if any).
+  if not pill.box.x then
+    local saved = getGlobalExt('pill_box')
+    local bx, by, bw, bh = saved:match('([%-%d]+),([%-%d]+),(%d+),(%d+)')
+    if bx then
+      pill.box = {x = tonumber(bx), y = tonumber(by), w = tonumber(bw), h = tonumber(bh)}
+    else
+      local bw2, bh2 = 118, 24
+      pill.box = {x = 8, y = math.max(0, (wh - bh2) // 2), w = bw2, h = bh2}
+    end
+    pill.needDraw = true
+    pill.composited = false
+  end
+
+  pillClamp()
+
+  -- Text (rebuild bitmap when it changes).
+  local text = state.syncInProgress and 'CuePort  syncing...' or 'CuePort'
+  if text ~= pill.text then pill.text = text; pill.needDraw = true end
+
+  if pill.needDraw or not pill.bitmap then
+    pillDrawBitmap()
+    pill.needDraw = false
+    pill.composited = false
+  end
+
+  -- Composite when first shown or the box moved.
+  if not pill.composited or pill.box.x ~= pill.cx or pill.box.y ~= pill.cy then
+    r.JS_Composite_Delay(pill.hwnd, 0.03, 0.045, 2)
+    r.JS_Composite(pill.hwnd, pill.box.x, pill.box.y, pill.box.w, pill.box.h,
+      pill.bitmap, 0, 0, pill.box.w, pill.box.h)
+    local lr = pill.lastRect
+    if lr then
+      r.JS_Window_InvalidateRect(pill.hwnd, lr.x - 2, lr.y - 2,
+        lr.x + lr.w + 2, lr.y + lr.h + 2, false)
+    end
+    r.JS_Window_InvalidateRect(pill.hwnd, pill.box.x - 2, pill.box.y - 2,
+      pill.box.x + pill.box.w + 2, pill.box.y + pill.box.h + 2, false)
+    pill.cx, pill.cy = pill.box.x, pill.box.y
+    pill.lastRect = {x = pill.box.x, y = pill.box.y, w = pill.box.w, h = pill.box.h}
+    pill.composited = true
+  end
+
+  -- Mouse: only intercept while hovering the pill (or mid-drag), so the rest
+  -- of the transport keeps working normally.
+  local sx, sy = r.GetMousePosition()
+  local hover_hwnd = r.JS_Window_FromPoint(sx, sy)
+  local mcx, mcy = r.JS_Window_ScreenToClient(pill.hwnd, sx, sy)
+  local overBox = mcx >= pill.box.x and mcx <= pill.box.x + pill.box.w
+             and mcy >= pill.box.y and mcy <= pill.box.y + pill.box.h
+  local overPill = overBox and hover_hwnd == pill.hwnd
+
+  if overPill or pill.drag then
+    pillStartIntercepts()
+    pillPeek(mcx, mcy)
+  else
+    pillEndIntercepts()
+  end
+
+  -- Drag-move.
+  if pill.drag then
+    if r.JS_Mouse_GetState(1) & 1 == 1 then
+      if math.abs(mcx - pill.drag.mx) + math.abs(mcy - pill.drag.my) > 3 then
+        pill.drag.moved = true
+      end
+      pill.box.x = pill.drag.bx + (mcx - pill.drag.mx)
+      pill.box.y = pill.drag.by + (mcy - pill.drag.my)
+      pillClamp()
+    else
+      -- Button released without us peeking the UP message.
+      pillFinishDrag()
+    end
+  end
+end
+
 local function renderFloatingMenu()
   if not state.floatingMenuEnabled then return end
   if not state.token then return end
+  -- When attached to the transport, the composited pill replaces this window.
+  if pillAttachActive() then return end
 
   local NoTitle  = ImGui.WindowFlags_NoTitleBar      and ImGui.WindowFlags_NoTitleBar()      or 0
   local NoResz   = ImGui.WindowFlags_NoResize        and ImGui.WindowFlags_NoResize()        or 0
@@ -2621,6 +2939,7 @@ local function loop()
   -- Hover tooltip is always on and runs even when the main window is hidden —
   -- that way users still get comment info while the GUI is out of the way.
   renderHoverTip()
+  updateAttachedPill()
   renderFloatingMenu()
 
   if state.windowVisible then
@@ -2690,6 +3009,8 @@ end
 -- Cleanup on any kind of exit (manual Beenden, Reaper shutdown, script replace)
 r.atexit(function()
   pcall(clearInstanceHeartbeat)
+  -- Remove the composited transport pill + release any mouse intercepts.
+  pcall(pillTeardown)
   -- A/B reference is temporary — remove the hidden track + unmute master so we
   -- never leave the project in a muted/odd state after the script stops.
   pcall(abRemove)

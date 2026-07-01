@@ -34,6 +34,9 @@ project markers, with a hover tooltip showing the full comment.
   the main window open.
 - **Dockable** main window — drag it into any Reaper docker (or toggle it from
   Settings); the docked position is remembered between sessions.
+- **Attach the pill to the transport** (GridBox-style) — the quick-access pill
+  can be drawn straight onto Reaper's transport and dragged around inside it;
+  click for the menu, right-click to detach. Requires JS_ReaScriptAPI.
 
 ## Requirements
 
@@ -76,7 +79,8 @@ Open the main window → top-right **Settings** button:
   `~/Library/Application Support/REAPER/Scripts/__startup.lua`), and
   **Start in background** to keep the main window closed on launch.
 - **Window** — dock the main window into Reaper (or drag it into a docker).
-- **Quick access** — toggle the floating pill.
+- **Quick access** — toggle the floating pill and, with JS_ReaScriptAPI
+  installed, attach it straight to the transport (GridBox-style).
 - **Diagnostics** — check required and recommended dependencies.
 - **Account** — log out / quit the script.
 
