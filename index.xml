@@ -38,6 +38,13 @@ Comments are placed relative to the start of the rendered audio. Use the in-app 
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
+      <version name="1.5.1" author="CuePort" time="2026-07-01T17:00:00Z">
+        <changelog><![CDATA[
+v1.5.1 — Fix: the per-project production binding is now reloaded when you switch/open a project (and while a project finishes loading after start-up), so a bound project no longer forces you to pick the production again. Bound view is also resilient when the production list can't be resolved yet.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
       <version name="1.5.0" author="CuePort" time="2026-07-01T15:00:00Z">
         <changelog><![CDATA[
 v1.5.0 — Floating pill can now attach straight to Reaper's transport (GridBox-style): it's drawn onto the transport window and can be dragged around inside it, click for the menu, right-click to detach. Enable under Settings > Quick access (requires the JS_ReaScriptAPI extension).

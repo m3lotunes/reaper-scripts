@@ -38,7 +38,7 @@
 --            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.5.0'
+local VERSION = '1.5.1'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
@@ -460,9 +460,13 @@ local state = {
   productionsError = nil,
   filterText = '',
 
-  -- Binding (from current project)
+  -- Binding (from current project). activeProject/lastBindingCheck let the
+  -- persistent loop notice project switches (and late-loading projects) and
+  -- re-read the per-project binding accordingly.
   boundProductionId = nil,
   boundProduction = nil,
+  activeProject = nil,
+  lastBindingCheck = nil,
 
   -- Sync
   syncInProgress = false,
@@ -2189,6 +2193,7 @@ end
 
 local function renderBound()
   local p = state.boundProduction
+  if not p then return end  -- defensive: caller only reaches here once resolved
   ImGui.Text(ctx, 'Connected to:')
   ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.accent)
   ImGui.Text(ctx, (p.artist_name or '-') .. ' — ' .. (p.title or '?'))
@@ -2288,11 +2293,27 @@ local function renderMain()
   if not state.productions and not state.productionsFetching and not state.productionsError then
     loadProductions()
   end
+
+  -- We may hold a restored binding id (e.g. after opening a project) without
+  -- its details yet. Resolve the production from the loaded list so the bound
+  -- view has a name to show — falling back to a placeholder if it's gone.
+  if state.boundProductionId and not state.boundProduction and state.productions then
+    for _, p in ipairs(state.productions) do
+      if p.id == state.boundProductionId then state.boundProduction = p; break end
+    end
+    if not state.boundProduction then
+      state.boundProduction = { id = state.boundProductionId, title = '(not found)', artist_name = '' }
+    end
+  end
+
   -- Show the bound view unless the user has explicitly asked to pick another
   -- production (via "Change project..." in either the main window or the
   -- floating menu). The override keeps the existing binding intact so the
-  -- user can Cancel back to it without losing their choice.
+  -- user can Cancel back to it without losing their choice. If we have a
+  -- binding id but couldn't resolve its details yet, fall back to the picker
+  -- rather than rendering a half-empty bound view.
   local showPicker = (not state.boundProductionId) or state.showPickerOverride
+      or (not state.boundProduction)
   if showPicker then
     renderProductionPicker()
   else
@@ -2918,6 +2939,35 @@ local function loop()
   r.SetExtState(EXT_NS, INSTANCE_HB_KEY, hbVal, false)
   state.lastHbWritten = hbVal
   state.supersededCheck = true
+
+  -- Keep the per-project binding in sync. This instance runs persistently in
+  -- the background, so we must re-read the binding when the active project
+  -- changes (tab switch / open) — and, while none is bound yet, retry once a
+  -- second in case the project finished loading after we started (auto-start).
+  do
+    local proj = r.EnumProjects and r.EnumProjects(-1) or 0
+    local nowT = r.time_precise()
+    local projChanged = proj ~= state.activeProject
+    local retryNil = (not state.boundProductionId)
+      and (not state.lastBindingCheck or nowT > state.lastBindingCheck + 1.0)
+    if projChanged or retryNil then
+      state.activeProject = proj
+      state.lastBindingCheck = nowT
+      local pid = getProjExt('production_id')
+      if pid ~= state.boundProductionId then
+        state.boundProductionId = pid
+        state.boundProduction = nil
+        if pid and state.productions then
+          for _, p in ipairs(state.productions) do
+            if p.id == pid then state.boundProduction = p; break end
+          end
+        end
+        state.waveform = nil
+        state.waveformForId = nil
+        state.pendingSeekAt = nil
+      end
+    end
+  end
 
   -- Poll pairing if active
   if state.screen == 'pairing' then pollPairing() end
