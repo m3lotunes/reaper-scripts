@@ -30,7 +30,10 @@ project markers, with a hover tooltip showing the full comment.
 - **Per-project binding** stored in the `.rpp` via `SetProjExtState`, so every
   project keeps its own CuePort production link.
 - **Auto-start** option so the script runs in the background whenever Reaper
-  starts.
+  starts, with a **Start in background** switch so it launches without popping
+  the main window open.
+- **Dockable** main window — drag it into any Reaper docker (or toggle it from
+  Settings); the docked position is remembered between sessions.
 
 ## Requirements
 
@@ -70,7 +73,9 @@ Open the main window → top-right **Settings** button:
 
 - **API** — switch between the production and preview workers.
 - **Startup** — toggle auto-start (adds/removes a block in
-  `~/Library/Application Support/REAPER/Scripts/__startup.lua`).
+  `~/Library/Application Support/REAPER/Scripts/__startup.lua`), and
+  **Start in background** to keep the main window closed on launch.
+- **Window** — dock the main window into Reaper (or drag it into a docker).
 - **Quick access** — toggle the floating pill.
 - **Diagnostics** — check required and recommended dependencies.
 - **Account** — log out / quit the script.
@@ -80,7 +85,9 @@ Open the main window → top-right **Settings** button:
 - One self-contained Lua file, ~2500 lines including a small inline JSON
   parser.
 - HTTP via `curl` through `reaper.ExecProcess` (cross-platform).
-- UI via ReaImGui; non-dockable windows for a tool-like feel.
+- UI via ReaImGui. The main window is dockable (its dock id is persisted in
+  global `ExtState`); the floating pill and modal dialogs stay non-dockable for
+  a tool-like feel.
 - Markers carry a uniform color; comment metadata (author, text) is cached
   in `ProjExtState`, not in the marker name, so the ruler stays clean.
 - The waveform is drawn from the `peaks` + `duration` that ship with

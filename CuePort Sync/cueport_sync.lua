@@ -495,6 +495,15 @@ local state = {
 
   -- UI
   showDebug = false,
+
+  -- Docking (main window). dockId 0 = floating, negative = a Reaper docker.
+  -- lastDockId remembers which docker to reattach to when re-enabling docking.
+  -- pendingDock, when set, is applied to the next frame (nil = leave as-is so
+  -- the user can freely drag-dock/undock without us fighting them each frame).
+  mainDocked = false,
+  dockId     = 0,
+  lastDockId = -1,
+  pendingDock = nil,
 }
 
 -- Load persisted state
@@ -1430,7 +1439,10 @@ for name, func in pairs(reaper) do
 end
 
 local FONT_SIZE = 14
-local ctx = ImGui.CreateContext('CuePort Sync')
+-- Enable docking so the main window can be attached to a Reaper docker. The
+-- floating pill and modals opt out individually via WindowFlags_NoDocking.
+local _dockCfg = (ImGui.ConfigFlags_DockingEnable and ImGui.ConfigFlags_DockingEnable()) or 0
+local ctx = ImGui.CreateContext('CuePort Sync', _dockCfg)
 local FONT = ImGui.CreateFont('sans-serif', FONT_SIZE)
 ImGui.Attach(ctx, FONT)
 
@@ -1652,6 +1664,33 @@ local function renderSettings()
     end
   end
   ImGui.TextDisabled(ctx, 'Runs in the background — open the GUI any time via the Actions list.')
+
+  -- Start in background: keep the main window closed when the script is launched
+  -- at Reaper startup, no matter how auto-start was wired up. Reopen via the
+  -- floating pill or by re-running the action.
+  local smEnabled = getGlobalExt('start_minimized') == '1'
+  local smChanged, smVal = ImGui.Checkbox(ctx, 'Start in background (window closed)', smEnabled)
+  if smChanged then setGlobalExt('start_minimized', smVal and '1' or '0') end
+  ImGui.TextDisabled(ctx, 'Launch without popping the main window open.')
+
+  ImGui.Dummy(ctx, 0, 10)
+  ImGui.Separator(ctx)
+  ImGui.Dummy(ctx, 0, 4)
+
+  -- Window / docking
+  ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.accent)
+  ImGui.Text(ctx, 'Window')
+  ImGui.PopStyleColor(ctx)
+  local dockChanged, dockVal = ImGui.Checkbox(ctx, 'Dock window in Reaper', state.mainDocked)
+  if dockChanged then
+    if dockVal then
+      -- Reattach to the docker last used (defaults to Reaper docker #1).
+      state.pendingDock = (state.lastDockId and state.lastDockId ~= 0) and state.lastDockId or -1
+    else
+      state.pendingDock = 0  -- float
+    end
+  end
+  ImGui.TextDisabled(ctx, 'You can also drag the window into any Reaper docker.')
 
   ImGui.Dummy(ctx, 0, 10)
   ImGui.Separator(ctx)
@@ -2585,15 +2624,38 @@ local function loop()
   renderFloatingMenu()
 
   if state.windowVisible then
-    -- Fixed window size — NoResize prevents user drag-resize, Cond_Always
-    -- re-applies size every frame so it can't drift.
+    -- Apply a pending dock change (from the Settings toggle or startup restore)
+    -- exactly once, so the rest of the time the user can freely drag the window
+    -- in/out of a docker without us re-forcing it every frame.
+    if state.pendingDock ~= nil and ImGui.SetNextWindowDockID then
+      ImGui.SetNextWindowDockID(ctx, state.pendingDock)
+      state.pendingDock = nil
+    end
+    -- Fixed window size only while floating — NoResize prevents user drag-resize
+    -- and Cond_Always re-applies size every frame so it can't drift. When docked
+    -- the docker controls the size, so we must not force it (and allow resize).
     local MAIN_W, MAIN_H = 520, 600
-    ImGui.SetNextWindowSize(ctx, MAIN_W, MAIN_H, ImGui.Cond_Always and ImGui.Cond_Always() or 0)
+    if not state.mainDocked then
+      ImGui.SetNextWindowSize(ctx, MAIN_W, MAIN_H, ImGui.Cond_Always and ImGui.Cond_Always() or 0)
+    end
     local sc, sv = pushCueportTheme()
-    local noResize = ImGui.WindowFlags_NoResize and ImGui.WindowFlags_NoResize() or 0
-    local flags = cueportWindowFlags(noResize)
-    local visible, open = ImGui.Begin(ctx, 'CuePort Sync##cpmain', true, flags)
+    -- Main window is dockable (no NoDocking flag). NoResize only while floating.
+    local extra = 0
+    if not state.mainDocked then
+      extra = ImGui.WindowFlags_NoResize and ImGui.WindowFlags_NoResize() or 0
+    end
+    local visible, open = ImGui.Begin(ctx, 'CuePort Sync##cpmain', true, extra)
     if visible then
+      -- Track dock state so next frame picks the right flags/size, and persist
+      -- the docker id so the window reopens where the user left it.
+      state.mainDocked = ImGui.IsWindowDocked and ImGui.IsWindowDocked(ctx) or false
+      local curDock = ImGui.GetWindowDockID and ImGui.GetWindowDockID(ctx) or 0
+      if curDock ~= state.dockId then
+        state.dockId = curDock
+        if curDock ~= 0 then state.lastDockId = curDock end
+        setGlobalExt('main_dock_id', tostring(curDock))
+      end
+
       renderHeader()
 
       if state.screen == 'login'       then renderLogin()
@@ -2660,11 +2722,23 @@ do
   state.instanceId = string.format('%x', math.floor(r.time_precise() * 1000) % 0xFFFFFF)
   state.running = true
 
-  -- When triggered by the auto-start shim in __startup.lua, begin hidden.
-  -- User opens the GUI by running the same action again (single-instance
-  -- handshake sets `show_window_req` which the running loop consumes).
-  state.windowVisible = not (_G.CUEPORT_STARTUP == true)
+  -- Begin hidden when triggered by the auto-start shim in __startup.lua, OR
+  -- when the user has opted into "Start in background" (covers auto-start setups
+  -- wired up outside the shim, e.g. a Reaper startup action). The GUI is opened
+  -- by running the same action again (single-instance handshake sets
+  -- `show_window_req`, which the running loop consumes).
+  local startHidden = (_G.CUEPORT_STARTUP == true)
+                   or (getGlobalExt('start_minimized') == '1')
+  state.windowVisible = not startHidden
   state.floatingMenuEnabled = (getGlobalExt('floating_menu') == '1')
+
+  -- Restore the docked position from a previous session (0 = floating).
+  local savedDock = tonumber(getGlobalExt('main_dock_id')) or 0
+  if savedDock ~= 0 then
+    state.dockId = savedDock
+    state.lastDockId = savedDock
+    state.pendingDock = savedDock  -- applied on the first frame the window shows
+  end
 
   loadState()
   decideInitialScreen()
