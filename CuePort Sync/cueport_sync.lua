@@ -38,7 +38,7 @@
 --            or track length is stored for the version.
 --   v1.0.0 - Initial release
 
-local VERSION = '1.5.1'
+local VERSION = '1.5.2'
 local API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 local EXT_NS                 = 'CuePort'
@@ -2941,17 +2941,14 @@ local function loop()
   state.supersededCheck = true
 
   -- Keep the per-project binding in sync. This instance runs persistently in
-  -- the background, so we must re-read the binding when the active project
-  -- changes (tab switch / open) — and, while none is bound yet, retry once a
-  -- second in case the project finished loading after we started (auto-start).
+  -- the background, so instead of trying to detect *how* the project changed
+  -- (tab switch, File > Open into the same tab — which keeps the same project
+  -- pointer! — or a project that finished loading after auto-start), we simply
+  -- re-read the stored binding periodically and follow it. Whatever the active
+  -- project's ProjExtState says wins.
   do
-    local proj = r.EnumProjects and r.EnumProjects(-1) or 0
     local nowT = r.time_precise()
-    local projChanged = proj ~= state.activeProject
-    local retryNil = (not state.boundProductionId)
-      and (not state.lastBindingCheck or nowT > state.lastBindingCheck + 1.0)
-    if projChanged or retryNil then
-      state.activeProject = proj
+    if not state.lastBindingCheck or nowT > state.lastBindingCheck + 0.25 then
       state.lastBindingCheck = nowT
       local pid = getProjExt('production_id')
       if pid ~= state.boundProductionId then
@@ -2965,6 +2962,9 @@ local function loop()
         state.waveform = nil
         state.waveformForId = nil
         state.pendingSeekAt = nil
+        -- A new project's binding differs from the last → drop any A/B ref
+        -- flags so the compare UI reflects the new production, not the old one.
+        state.showPickerOverride = false
       end
     end
   end
