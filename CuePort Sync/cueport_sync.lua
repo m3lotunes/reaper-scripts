@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.30.5
+-- @version 1.30.6
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -86,7 +86,7 @@
 
 local K = {}
 
-K.VERSION            = '1.30.5'
+K.VERSION            = '1.30.6'
 K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 K.EXT_NS                 = 'CuePort'
@@ -1686,13 +1686,20 @@ end
 -- ── The check ────────────────────────────────────────────────────────────────
 
 function Upd.due()
-  -- A find we have caught up with is not a find any more. After an update the
-  -- stored answer names the version we are now running, so "up to date" is
-  -- right -- but the timestamp beside it would keep the next look a day away,
-  -- and the run right after an update is the one most likely to want it. Once
-  -- the answer is spent, ask again.
+  -- An answer that names something OLDER than what we run is stale knowledge:
+  -- we got past it by some other route (ReaPack's own browser, a hand-install),
+  -- so the stored line describes a version that no longer exists here and the
+  -- timestamp beside it should not hold the next look back.
+  --
+  -- An answer that names our OWN version must NOT reopen the budget. That is
+  -- the ordinary, healthy state -- checked today, nothing new -- and it is what
+  -- finishCheck writes every single time the check comes back clean. Treating
+  -- it as spent made due() permanently true: poll() started a check, finished
+  -- it a quarter second later, wrote the same version back, and started the
+  -- next one. The card blinked between spinner and result, and the script
+  -- asked GitHub for the same 200 bytes for as long as it ran.
   local seen = getGlobalExt(K.UPD_SEEN_KEY)
-  if seen ~= '' and not Upd.newer(seen, K.VERSION) then return true end
+  if seen ~= '' and Upd.cmp(seen, K.VERSION) < 0 then return true end
   local last = tonumber(getGlobalExt(K.UPD_LAST_KEY)) or 0
   return (os.time() - last) >= K.UPD_EVERY_SEC
 end

@@ -531,7 +531,7 @@ lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unrea
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
 lua5.4 test/test-ui-balance.lua         # 1857 assertions: every screen leaves ImGui's stacks clean
 lua5.4 test/test-narrow.lua             # 38 assertions: nothing is wider than the window
-lua5.4 test/test-update.lua             # 105 assertions: version compare, the three pre-replace checks, both install routes, restart
+lua5.4 test/test-update.lua             # 110 assertions: version compare, the three pre-replace checks, both install routes, restart
 ```
 
 One more runs on a platform none of us has. `test/test-windows-curl.lua`

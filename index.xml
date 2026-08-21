@@ -44,6 +44,23 @@ MIT licensed. The full text, the third-party notices and a list of everything th
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
+      <version name="1.30.6" author="CuePort" time="2026-08-21T14:24:09Z">
+        <changelog><![CDATA[
+v1.30.6 - the update check no longer runs in a loop.
+
+Fixes a bug introduced in 1.30.5. Once a check came back saying you are on the current version, the script treated that answer as spent and immediately asked again - a quarter of a second later, and again, for as long as it ran. On the Dependencies screen the card flicked between the spinner and the result, and Github was being asked for the same 200 bytes over and over.
+
+The rule was meant for a different case: after you update, a stored answer that names an older version is stale knowledge and should not hold the next look back. That still works. An answer that names the version you are running is the ordinary healthy state and now leaves the daily timer alone.
+
+Measured: one request per check, where the old build sent 112 over the same stretch.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
       <version name="1.30.5" author="CuePort" time="2026-08-20T20:18:44Z">
         <changelog><![CDATA[
 v1.30.5 - "Check now" now really looks now.
