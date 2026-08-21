@@ -1,0 +1,1124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="Melotunes">
+  <category name="CuePort">
+    <reapack name="cueport_sync.lua" type="script" desc="CuePort Sync — Artist comments as markers">
+      <metadata>
+        <description>{\rtf1\ansi\deflang1033
+{\fonttbl{\f0\fswiss\fcharset0 Helvetica;}}
+\f0\fs22
+\fs28\b CuePort Sync\b0\fs22\par
+\par
+Reaper integration for CuePort. The comments on a production, the artist's and the studio's, threads and all, are pulled into your project as native markers and drawn on a waveform inside the window. You can answer them from the DAW, delete a reply again, and switch between every version the studio has uploaded.\par
+\par
+\b Features\b0\par
+- Device-code pairing with the CuePort studio portal, no passwords in the script\par
+- Production picker grouped by artist, with cover art and an inline search\par
+- Waveform of the active version with the comments pinned on it, click or drag to move the DAW cursor\par
+- Comment list beside it: the whole thread, artist and studio, replies indented\par
+- Amber for the artist, purple for the studio, on the pins and on the timestamps\par
+- Reply to a comment from the DAW, and delete a reply you sent\par
+- Project markers for the comments, optional, and a render start marker of your own\par
+- A/B compare against the uploaded version, routed past the master so the finished bounce stays uncolored\par
+- Floating transport pill for one-click sync while the window is out of the way\par
+- Keeps itself up to date, through ReaPack when it manages this copy\par
+- Per-project binding, so every .rpp remembers its own production and version\par
+\par
+\b Requirements\b0\par
+- Reaper 6.68 or later\par
+- \b ReaImGui\b0  (install via ReaPack, required)\par
+- \b curl\b0  (bundled with Windows 10 and later, macOS and Linux)\par
+- \b SWS Extension\b0  (recommended, for reliable hover detection)\par
+- \b JS_ReaScriptAPI\b0  (recommended)\par
+\par
+\b Setup\b0\par
+1. Install this package via ReaPack.\par
+2. Open the Reaper Actions list and run \b cueport_sync.lua\b0 .\par
+3. Click \b Connect to CuePort\b0  and approve in the browser.\par
+4. Pick a production and bind it to the open .rpp.\par
+5. Click \b Sync comments\b0 . Done.\par
+\par
+\b Time alignment\b0\par
+Comments are placed relative to the start of the rendered audio. Use the in-app Set render start button to align the ruler to your mix start.\par
+\par
+MIT licensed. The full text, the third-party notices and a list of everything the script touches in your project are on the About screen in the script itself.\par
+}</description>
+        <link rel="website">https://cueport.app</link>
+      </metadata>
+      <version name="1.30.5" author="CuePort" time="2026-08-20T20:18:44Z">
+        <changelog><![CDATA[
+v1.30.5 - "Check now" now really looks now.
+
+Github answers with a five minute cache. The manual check asked the same URL as the daily one, so pressing the button could report "up to date" while a new version had already been on main for a couple of minutes. A forced check now goes around the cache; the once-a-day look still uses it, which saves everyone the traffic.
+
+Second: after you update, the next start looks again instead of sitting on the answer it already had. That answer named the version you are now running, so the daily timer would have pushed the next look a day out - and the run right after an update is the one most likely to want it.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.30.4" author="CuePort" time="2026-08-20T18:17:06Z">
+        <changelog><![CDATA[
+v1.30.4 - Same code as 1.30.3, one number higher.
+
+There is nothing new in here. The crash fix landed in 1.30.3, but getting to 1.30.3 meant running the update once more with the broken code still in memory -- so the fix could not be tried on the way in. This release exists to give 1.30.3 something to update to.
+
+If you are already on 1.30.3, this is the first run where the ReaPack route goes through with the fix in place.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.30.3" author="CuePort" time="2026-08-20T18:10:53Z">
+        <changelog><![CDATA[
+v1.30.3 - Fixes the crash for real this time. Please update.
+
+Updating through ReaPack could take Reaper down with it. The reason was ours, and it was not what the two previous fixes addressed.
+
+The script watched its own file to learn that ReaPack had done its work. But a file appearing does not mean ReaPack has finished: it renames the file in one step and only reports afterwards. In that gap the script called back into ReaPack to put the repository setting it had borrowed back the way it was -- landing in the middle of a live transaction.
+
+It no longer touches ReaPack after the one push that starts it. The note that remembers the borrowed setting stays on file and the next start of the script acts on it, which is where it belonged all along: after an update there is a restart anyway.
+
+If you ran 1.30.0 through 1.30.2 and Reaper crashed on an update, nothing is broken -- the repository setting is put right the next time the script starts.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.30.2" author="CuePort" time="2026-08-20T18:05:32Z">
+        <changelog><![CDATA[
+v1.30.2 - ReaPack is only asked when it would actually fetch something.
+
+ReaPack compares its own registry against the index, not the file on your disk. If the registry already lists the version on offer, a synchronize finishes without touching anything -- and the update card sat there waiting for a file that was never going to change. It now asks that question first: when ReaPack would not act, the card offers to replace the file directly instead, and a ReaPack run that declines falls back to the same thing rather than running into a timeout.
+
+The wait for ReaPack is twenty seconds rather than two minutes, and the overlay has a Cancel. A wait that locks the whole window and offers no way out is a trap; cancelling puts the repository setting back and clears a half-finished download.
+
+Two things hardened while looking for a crash report from 1.30.0: the overlay draws into the window's own draw list rather than the global foreground one, and BeginDisabled/EndDisabled now hang off a single condition so the disabled stack cannot be left open.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.30.1" author="CuePort" time="2026-08-20T17:45:47Z">
+        <changelog><![CDATA[
+v1.30.1 - Fixes a crash in 1.30.0. Please update.
+
+When the update card had a restart to offer, the script asked Reaper for its own command id on every frame, and that question was answered by registering the script -- which writes Reaper's action registration to disk. Thirty times a second. Pressing "Update via ReaPack" while ReaPack was writing the same registration could take Reaper down with it.
+
+It now asks once, at the moment the button is actually pressed, and remembers the answer. Nothing that draws writes anything.
+
+Only 1.30.0 was affected, and only when a restart was on offer.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.30.0" author="CuePort" time="2026-08-20T17:30:28Z">
+        <changelog><![CDATA[
+v1.30.0 - The script keeps itself up to date.
+
+Once a day it reads 200 bytes from its own file on GitHub to learn the current version number. Nothing waits for the network: the request runs detached and the window keeps its frame rate. Switch it off under Settings if you would rather not.
+
+When there is a new version, the Dependencies page offers to install it, and the script restarts itself into the new one afterwards.
+
+How it installs depends on how you installed it, and all three cases work. Installed through ReaPack, it is handed back to ReaPack, which updates that one repository and nothing else, so its records stay right. Installed by hand, with or without ReaPack, the file is replaced directly and the old one is kept as a .bak beside it. A package you have pinned in ReaPack is left alone.
+
+The new file is checked three ways before anything is replaced: its byte count, its version line, and whether it compiles at all. A download that stopped halfway cannot reach the slot the script runs from.
+
+It also notices when something else changes the file, an update through ReaPack's own browser for instance, and offers the restart then too. Without that you would keep running the old version until the next time REAPER starts.
+
+The header says so when there is something to install: plain text right behind the wordmark, on its line, with a small Open button that takes you to the update page. A restart you asked for comes back with the window open even if you normally start in the background. And while a download or a ReaPack run is going the window dims with a large turning arc over it and nothing underneath can be pressed, so a wait looks like a wait rather than like a window that stopped.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.7" author="CuePort" time="2026-08-19T15:43:05Z">
+        <changelog><![CDATA[
+v1.29.7 - Pins and timestamps say who spoke, and Reply puts the caret in the box.
+
+Every pin on the waveform was purple, whoever had written the comment, so the strip could only say "somebody said something here". The artist's pins and timestamps are amber now and the studio's stay purple, the same reading cueport.app's own player gives. The name beside the timestamp is unchanged, so the column does not turn into two columns of colour.
+
+Pressing Reply now puts the keyboard in the field as well, so you can start typing without a second click.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.6" author="CuePort" time="2026-08-19T15:29:36Z">
+        <changelog><![CDATA[
+v1.29.6 - The status line sits beside COMMENTS and hides itself again.
+
+"Reply sent.", "Reply deleted." and the rest used to take a line of their own under the heading, which pushed the whole conversation down every time one appeared, and stayed there. They now sit next to the heading and disappear after two seconds. A failure is the exception: it is the only place the reason is written down, so it stays until the next thing you do.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.5" author="CuePort" time="2026-08-19T02:23:11Z">
+        <changelog><![CDATA[
+v1.29.5 - Fixes "2 visible items with conflicting ID" on a thread with more than one answer.
+
+Every answer's delete control was the same item as far as Dear ImGui was concerned, because the id scope in the comment list is one per thread rather than one per line. With two answers, hovering either one put the red warning on screen. Each control now has its own scope.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.4" author="CuePort" time="2026-08-19T02:15:41Z">
+        <changelog><![CDATA[
+v1.29.4 - Fixes a ReaScript error thrown by the delete control added in 1.29.3.
+
+The control was submitted inside the block that holds a comment and its answers, by moving the cursor to the right edge and putting it back. Reaper refuses that: a group whose cursor was moved and left there raises "Code uses SetCursorScreenPos() to extend window/parent boundaries". It now sits outside the block, where the Reply control has always been. Nothing about it looks or behaves differently.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.3" author="CuePort" time="2026-08-19T02:09:04Z">
+        <changelog><![CDATA[
+v1.29.3 - The delete control sits on the reply, and only on the reply.
+
+In 1.29.2 it sat on the head of the thread and took the whole conversation with it. That was not the idea. The small cross now sits at the right edge of an answer and removes that answer. The comment a thread starts with cannot be removed from here at all - it is usually the artist's - and the server refuses it too, not just the interface.
+
+Everything else is as before: one press turns the cross into Sure?, only the second press sends anything, and an armed control keeps asking even when the mouse moves away.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.2" author="CuePort" time="2026-08-19T01:57:23Z">
+        <changelog><![CDATA[
+v1.29.2 - Remove a comment or a reply without leaving Reaper.
+
+A small cross beside Reply deletes the comment in CuePort. It asks first: one press turns it into Sure?, and only the second press sends anything. This is the one action here that cannot be undone, on a control that appears under the mouse rather than being aimed at, a few pixels from Reply. An armed control keeps asking even when the mouse moves away.
+
+Deleting a reply removes that line. Deleting a comment takes the replies to it with it, the same way the portal does, and says how many went along; the thread is then fetched again, so the markers and the list agree with the server. Comments belonging to another studio cannot be reached.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.1" author="CuePort" time="2026-08-19T01:48:19Z">
+        <changelog><![CDATA[
+v1.29.1 - The Send button under a reply works.
+
+Sending a reply only worked with the Enter key: the button submitted an empty message and looked as if it did nothing. The text field was asked to report only on Enter, and it turned out not to hand the typed text back at any other moment either, so there was nothing for the button to send. The field is now an ordinary one, the text arrives as it is typed, and Enter is recognised on its own. Leaving the field by clicking somewhere else does not send.
+]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.29.0" author="CuePort" time="2026-08-18T23:50:14Z">
+        <changelog><![CDATA[
+v1.29.0 - Every comment, every version, and you can answer from the DAW.
+
+The comment column scrolls inside itself however many comments there are, so a long conversation no longer stretches the window, and hovering a pin on the waveform brings its comment into view. It used to show the artist's opening remarks and nothing else: studio comments and every reply were filtered out before they reached the script, so a conversation you could read in the browser was half missing here. It now carries the whole thread. Replies sit under the comment they answer, marked with who wrote them, and one pin per thread goes on the ruler rather than one per line.
+
+If CuePort answers like a version older than this script, the session falls back to CuePort's preview worker so the new features work before the release catches up. Same company, same account, same database, and the badge in the header says PREVIEW for as long as it applies. Production is asked first every time, so it stops by itself once the release lands.
+
+Reply without leaving Reaper. Hover a comment, press Reply, type, send. It arrives in CuePort as a normal threaded reply, signed with the name of whoever paired this machine, and the artist's page updates while it is open.
+
+Pick the version you are working on. A production is not one file: it holds the instrumental, the mix and every version of both, and the script only ever opened the newest mix. The picker now shows the kinds each production holds as pills you can press. Above the waveform both kinds are always shown, so you can see which one you are looking at, with the versions of the open kind as pills beneath them. Everything reads left to right the way it was made: instrumental before mix, v1 v2 v3 oldest first. Your choice is remembered per project.
+
+Switching version moves everything with it: the waveform, the loudness figures, the comments and the markers on the ruler. A loaded A/B reference is taken down and its downloaded audio deleted, so no file is left behind per version; load it again for the version you switched to. If the new version cannot be fetched, the script goes back to naming the one whose pins are still on the ruler instead of leaving the two disagreeing.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.28.0" author="CuePort" time="2026-08-15T17:56:13Z">
+        <changelog><![CDATA[
+v1.28.0 — A consolidated release. Everything below has shipped over the past few days as 1.27.x; this is the same code with a name that says where it stands.
+
+Windows: every call to the server was silently broken and now works. Curl reads its config file with escape sequences inside quotes, so a Windows path went in as C:\Users\... and came out mangled — curl reported success while the answer landed somewhere the script never looked. All three paths that talk to CuePort escape what they write now. Verified on a real Windows machine, and with Reaper itself driving the request. macOS and Linux were never affected.
+
+Project markers are optional. Two switches under Settings: whether the comment markers go on the ruler at all, and whether the render start marker is shown. Turn the comment markers off and the ruler stays yours — the pins on the waveform and the comment list still show every comment, because they read from the project rather than from the ruler.
+
+The dependency page is part of the interface. It used to open a second window with its own title bar; it is a screen now, like Settings and About, with one row per dependency, a status badge and a line saying what each one is actually for. Its Re-check button used to do nothing at all — it asks curl again now.
+
+Header and layout: the mark and the wordmark sit a little below the controls beside them, which stay level with each other. The comment column steps aside on Settings, About and the picker — none of them is about a track — without changing the size of the window. Three strings that were still German are English like the rest.
+
+The full history of the smaller steps is kept per version in this list; the script file no longer carries a copy of it.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.27.5" author="CuePort" time="2026-08-15T17:41:57Z">
+        <changelog><![CDATA[
+v1.27.5 — Fixes the header menu and close box, which followed the brand down in v1.27.4 while the connection badge stayed up. SameLine returns to the y the line started at, so one correction holds for exactly one control; each of the three now gets its own. They sit level with each other again.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.27.4" author="CuePort" time="2026-08-15T17:33:58Z">
+        <changelog><![CDATA[
+v1.27.4 — The mark and the wordmark sit a few pixels lower in the header. A line is aligned by its top edge, so they used to share an upper edge with the connection badge, the menu and the close box, and read as pinned to the ceiling. Only the brand moved; the controls stayed exactly where they were.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.27.3" author="CuePort" time="2026-08-15T16:22:55Z">
+        <changelog><![CDATA[
+v1.27.3 — The dependency page joins the rest of the interface. It was the last thing that opened a second window with its own title bar, built from separators and tick glyphs, while every other page is a section label over cards. It is a screen now, reached from the menu like Settings and About: one row per dependency with a status badge, and a line saying what each one is actually for. Its Re-check button used to do nothing at all; it asks curl again now. Extensions cannot be re-read without restarting Reaper, and the page says so rather than pretending otherwise.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.27.2" author="CuePort" time="2026-08-15T16:10:29Z">
+        <changelog><![CDATA[
+v1.27.2 — Three strings were still German while the rest of the interface is English: the curl and SWS install hints in the dependency banner, and the placeholder shown in the header when a bound production is no longer in the list. Wording only, no behaviour change.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.27.1" author="CuePort" time="2026-08-14T20:42:37Z">
+        <changelog><![CDATA[
+v1.27.1 — Fixes every server call on Windows. Curl reads a config file with escape sequences inside quotes and ignores a backslash before any other letter, so a Windows path went in as C:\Users\... and came out mangled: the answer landed somewhere the script never looked, while curl reported success. All three paths that talk to the server (the API, the A/B download, the cover art) now escape what they write. macOS and Linux are unaffected, since their paths carry no backslashes, which is why this never showed there.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.27.0" author="CuePort" time="2026-08-14T20:10:35Z">
+        <changelog><![CDATA[
+v1.27.0 — Two new settings under Project markers: whether the comment markers go on the ruler at all, and whether the render start marker is shown. Turn the comment markers off and the ruler stays yours: the pins on the waveform and the comment list still show every comment, because they read from the project, not from the ruler. Both switches take effect on the spot and cost no request. The render start marker is on by default; with it off, Set and Clear go on working exactly as before and the marker comes back with the switch.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.26.1" author="CuePort" time="2026-08-14T19:46:32Z">
+        <changelog><![CDATA[
+v1.26.1 — The comment column steps aside on Settings and on the production picker too, the same way it does on About. It belongs to the production screen and to nothing else. The setting is untouched, it is back the moment you return, and none of it changes the size of your window.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.26.0" author="CuePort" time="2026-08-14T19:36:05Z">
+        <changelog><![CDATA[
+v1.26.0 — The comment column steps aside on the About page. That page is about the script rather than about a track, so a column of comments beside it belonged to nothing on screen. The setting is untouched and the column is back the moment you leave, and the window keeps its size either way since the list has never had a say in that.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.25.4" author="CuePort" time="2026-08-14T19:27:53Z">
+        <changelog><![CDATA[
+v1.25.4 — Follow-up to the row alignment: a row now claims its full height before it draws anything. Without that the line was only as tall as what had been put on it so far, so the second of two buttons followed the lowered label rather than the top of the row.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.25.3" author="CuePort" time="2026-08-14T11:22:00Z">
+        <changelog><![CDATA[
+v1.25.3 — Fix: a row's label sat above the middle of its card. ImGui lines items up by their top edge, so "Render start" and its two marks were five pixels high beside a 24 px button. The label, the check and the "?" are centred against the control now, and the switches in Settings with them (two pixels there).
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.25.2" author="CuePort" time="2026-08-13T23:37:07Z">
+        <changelog><![CDATA[
+v1.25.2 — Settings did the same thing About did in v1.25.1: opening it stretched the window downwards. Rather than leaving one page out at a time, only the production screen now builds the window's minimum height. Every other page scrolls, and none of them changes the size of your window. The way back grew it too: a window that resizes to its own content is handed the size worked out from the frame before, so the first frame back on the production screen still carried the height of the page just left. The frame a screen change lands on is no longer measured.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.25.1" author="CuePort" time="2026-08-13T23:29:54Z">
+        <changelog><![CDATA[
+v1.25.1 — Opening About no longer stretches the window. Its content was being measured into the window's minimum height, which pulled the window down to the cap the moment the page opened, and left it there because a floor never comes back down by itself. The page scrolls instead, the same way the production picker already did.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.25.0" author="CuePort" time="2026-08-13T23:15:21Z">
+        <changelog><![CDATA[
+v1.25.0 — The highlight works both ways now. Hovering a pin on the waveform lit its comment in the list already; hovering a comment in the list now lights its pin out on the strip, in the same colour and with the same larger dot. The tooltip stays with the mouse and does not follow.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.24.2" author="CuePort" time="2026-08-13T23:02:27Z">
+        <changelog><![CDATA[
+v1.24.2 — Fix: the dot of a comment pin and the arrow of the play cursor sat half a pixel off their own vertical lines. AddLine shifts both of its endpoints by half a pixel before stroking and nothing else does, so a line and a dot handed the same x do not line up. Both stems are drawn as rectangles now, which land exactly where they are told.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.24.1" author="CuePort" time="2026-08-13T22:50:18Z">
+        <changelog><![CDATA[
+v1.24.1 — The shadow under the cover is lighter and has a little more room to fade out over. It is one element inside a card, not a card sitting on the window, so it only has to lift off — at a card's strength it read as a hard edge under the picture.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.24.0" author="CuePort" time="2026-08-13T22:43:52Z">
+        <changelog><![CDATA[
+v1.24.0 — The cover in the production header is larger again, and its corners are rounded properly now: the artwork itself is drawn rounded rather than square with a rounded frame painted over it, so the picture no longer pokes out past its own outline. It also has a soft shadow under it, drawn before the picture so it reads as lifted off the card rather than as a haze over the artwork.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.23.0" author="CuePort" time="2026-08-13T22:14:59Z">
+        <changelog><![CDATA[
+v1.23.0 — The cover in the production header is a good deal larger, and it reserves its own height so the hairline below it cannot cut across the picture. Covers also download in the background now: the first sign-in of a studio with many productions used to pause while they came down, and the window keeps its frame rate instead, each cover appearing as it lands. On Windows the old behaviour stays, because the launcher that makes this work cannot be tested there from where the script is built. Only one download runs at a time — a sync during one is remembered and asks again the moment it is done. Signing out drops a download that is still running, so covers of the studio you just left cannot land in the folder afterwards.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.22.0" author="CuePort" time="2026-08-13T21:37:49Z">
+        <changelog><![CDATA[
+v1.22.0 — Cover art. The artwork a production carries in CuePort now shows next to it: in the corner of the production header, with the loudness figures moved to its left, and as a tile in the picker list. A production without artwork gets the CuePort music glyph, drawn rather than loaded so it scales cleanly and follows the theme colour. Covers are cached in an "artwork" folder inside the REAPER resource path, never in the project folder, because nothing in the project points at them; signing out deletes them and the storage settings list them alongside the A/B audio. Everything missing comes down in a single curl call, one frame after the list is on screen so the window fills in rather than the login hanging on a download, and again on sync so a cover uploaded after you logged in still arrives. Nothing is fetched twice. A long production title now wraps before the corner instead of running under the numbers.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.21.2" author="CuePort" time="2026-08-13T19:59:18Z">
+        <changelog><![CDATA[
+v1.21.2 — Closes the gaps between the cards on the About screen. On a wide window the cards were laid out as rows of two, and a row is as tall as its taller card — a card holding one paragraph next to a card holding six bullets left the difference standing as dead space, which on this screen was most of a screen. They are now two real columns, each a stack, so a card starts where the one above it ended. Which card goes into which column is decided from the heights the previous frame actually came out at rather than from a guess about the content, so it stays balanced when the text is edited.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.21.1" author="CuePort" time="2026-08-13T19:49:47Z">
+        <changelog><![CDATA[
+v1.21.1 — Rewrites what the About screen says CuePort is. The first version described a waveform with comments on it — which is the part this script happens to use, not the product. CuePort is the studio platform that sits around your DAW: artists, productions, versions and files, an artist portal where everyone gets their own login, comments pinned to the exact second on the waveform, session booking your artists can request and reschedule, lyrics both sides edit in the same place, team roles with live presence, and Spotify stats that pull themselves in daily. Taken from the website rather than from memory. Anyone arriving from the Reaper forum reads this page and no other, so it had better be the whole picture.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.21.0" author="CuePort" time="2026-08-13T19:28:57Z">
+        <changelog><![CDATA[
+v1.21.0 — Adds an About screen and puts the licensing in order, both for the sake of anyone finding this in the wild. About says what CuePort is, how the script works, and — the part that earns the screen — exactly what it writes into the project it is pointed at: which markers, which track, which folder next to your .rpp, which of it is a named undo step and which is not, and what leaves the machine (a device token and the id of the production you picked; nothing from your project is ever uploaded). It carries the no-warranty notice in plain words alongside the licence text, links to the terms and privacy policy for the CuePort service itself, and names the licences of everything bundled. Reachable from the hamburger menu. The script now also carries the full MIT licence in its own header — ReaPack hands a user the .lua on its own, and a LICENSE file back in the repository is no use to them — and that file is installed alongside it as well. rxi's copyright line now travels with the JSON parser it belongs to, as the MIT licence requires.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="LICENSE">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/LICENSE</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.20.0" author="CuePort" time="2026-08-13T18:51:24Z">
+        <changelog><![CDATA[
+v1.20.0 — The hamburger button and the menu panel are now drawn as one outline. Every version before this drew the panel's border as a rectangle, painted the part under the button away again with a clipped patch, and pieced what was left back together with a stroke here and a single pixel of line there. Three different draw calls met on the same two columns of pixels, and no two of them lay down ink quite the same way — that is what the notch at one bottom corner of the tab and the broken length of border at the other actually were, and why each round of nudging the numbers moved the problem rather than removing it. There is now a single closed path for the whole silhouette: up the tab's left edge, round its top, down its right edge — which is the panel's right edge, so it simply carries on — round the panel and back along the top to where the tab began. Nothing is erased and nothing has to be restored, so there is no junction left to get wrong. The two-shape construction is kept as a fallback for a window too narrow for the panel to sit under its button, and for builds without the path API.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.19.4" author="CuePort" time="2026-08-13T18:35:14Z">
+        <changelog><![CDATA[
+v1.19.4 — The join again, and this time the reason the tab's right edge looked six pixels longer than its left. The band that carries the tab down into the panel ran the full width of the button, and the button's right edge is the panel's right edge — so the band wiped the panel's own border for its height and the tab's outline had to be carried down to paint it back. A path stroke standing in for what a rectangle drew above and below it never matches exactly, and that mismatch is what was visible: a short, slightly brighter length of border hanging under the join and stopping where the band stopped. The band now ends on that column instead of over it, and the outline stops at the panel's top edge where the panel's own border takes over. Stopping short was tried once before and left a hairline instead; it could not have worked then, because the tab came from the button's rectangle and the border from the panel's and the two were a fraction apart — since v1.19.3 they are the same column. Also puts back the single pixel of the panel's top border that the patch's clip margin has to paint over, which is the notch at the tab's bottom-left corner.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.19.3" author="CuePort" time="2026-08-13T18:26:50Z">
+        <changelog><![CDATA[
+v1.19.3 — Closes the last visible seam between the hamburger button and the menu panel. ImGui floors a window's position, and the button's right edge does not have to be a whole number — padding and text metrics put it wherever they put it — so the panel could end up as much as a pixel to the left of the button it hangs from. The tab was drawn from the button's rectangle and the panel's border from the panel's own, and that fraction showed up twice: as surface standing out past the panel's right edge, and as a step where the tab's outline handed over to the panel's. The tab now takes its right edge from the panel itself and moves onto it whole, so the two agree by construction rather than by rounding. The patch that carries the button into the panel also reaches one pixel to the sides instead of two — one is what the outline's antialiasing needs, and every pixel beyond that was a pixel of the header's rule erased for nothing, which is the small gap that was left where the rule stopped short of the tab.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.19.2" author="CuePort" time="2026-08-13T18:10:58Z">
+        <changelog><![CDATA[
+v1.19.2 — Softens the menu panel's gradient further. What made it visible was not its shape but how little room it had: washTop is ten steps of alpha and all ten were spent inside twelve pixels, which is nearly one step per pixel and reads as a ladder however it is shaped. The climb now takes about a quarter of the panel and the wash as a whole reaches seventy percent of the way down it, sampled into ten bands along a smoothstep curve so there is no change of slope anywhere for the eye to read as a line. Measured, the steepest band went from 0.83 to 0.24 alpha per pixel.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.19.1" author="CuePort" time="2026-08-13T17:53:00Z">
+        <changelog><![CDATA[
+v1.19.1 — Fixes how the menu panel got that depth. The shadow ring was added from inside the popup, after its own background and its rows, so the soft texture's opaque centre landed straight on top of the menu as a grey veil and its top row of tiles dragged a band across the panel's upper edge. The ring is now issued as three clipped bands around the panel — left, right, under — deliberately disjoint so no corner is painted twice, and nothing lands on the panel or above it, where the button joins. The gradient fades in over the first few pixels as well, instead of starting at full strength: a fifth of a percent of white is not much, but drawn straight across the panel it read as a horizontal line.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.19.0" author="CuePort" time="2026-08-13T17:34:11Z">
+        <changelog><![CDATA[
+v1.19.0 — The menu panel gets the depth the cards have: the same top-down gradient over its surface and a shadow ring underneath it, so it sits on the window rather than floating flat above it. Both start below the join with the hamburger, so the button and the panel still read as one shape — running either across that seam is exactly what four earlier attempts were spent getting right. Surface, border and radius were already shared with the cards; this is the piece that was missing.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.18.6" author="CuePort" time="2026-08-13T17:13:22Z">
+        <changelog><![CDATA[
+v1.18.6 — Quitting the script no longer throws away the A/B audio it had downloaded, so reopening on the same project reuses the file instead of pulling the whole version down again. Until now the audio was only kept when the project had been saved while the reference track was in it; a plain load-and-quit deleted it. The reference track still goes on exit, as it must, and the audio is queued so the next save of that project without a reference in it drops it. Pressing "Remove" is still the explicit "done with it" and deletes straight away, and so does logging out or switching production.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.18.5" author="CuePort" time="2026-08-13T16:45:20Z">
+        <changelog><![CDATA[
+v1.18.5 — The A/B storage panel in Settings showed only the shared cache, which for a saved project is always empty — so it read "0 file(s)" right after a download had landed in the project folder. It now reports both: what this project is holding beside its .rpp, and the shared cache. Each row says what it is for, and why only the cache has a clear button: a file beside a project is dropped by itself once that project has been saved without the reference track in it, while nothing can ever tell the shared cache that its files are finished with.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.18.4" author="CuePort" time="2026-08-13T16:29:06Z">
+        <changelog><![CDATA[
+v1.18.4 — Fix: "Start in background" did nothing for anyone using auto-start. Whether to begin hidden was "the auto-start shim launched us" OR "the switch is on", so the shim's yes always won and the switch could only ever add to it — turning it off changed nothing, while Settings said it would. The switch now decides on its own. Nothing changes for anyone who had auto-start on and never touched it: their first run under this version writes the switch on, so the script behaves exactly as before and the switch finally shows what is happening.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.18.3" author="CuePort" time="2026-08-13T00:26:49Z">
+        <changelog><![CDATA[
+v1.18.3 — Logging out now drops the project's production binding as well, not just the content it was showing. Logged out means disconnected, so the project should not go on claiming to belong to a production of a studio this Reaper is no longer paired with. Logging back in starts at the picker. Only the project that is open can be reached this way; another tab keeps its binding until it is opened and logged out from as well.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.18.2" author="CuePort" time="2026-08-13T00:18:08Z">
+        <changelog><![CDATA[
+v1.18.2 — Logging out now clears everything the session was showing. The comment column went on listing the last production's comments after logout; so did the waveform, the loudness figures and the A/B reference, and the markers stayed on the ruler. All of that is studio content and goes with the token. The per-project binding stays: that is an id rather than content, and dropping it would make every project forget which production it belongs to, which logging back in cannot undo. Also: the label, the check and the "?" on a row now share one middle — anything shorter than a line of text was riding high, because ImGui lines items of differing heights up by their tops.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.18.1" author="CuePort" time="2026-08-13T00:06:22Z">
+        <changelog><![CDATA[
+v1.18.1 — Fix: opening the production picker dragged the window longer and longer. Not a loop in the code but one in the layout: the list was told to fill the rest of its region, and that region is one that grows to fit its content. Filling it made it taller, which made the fill taller, every frame. The list is now sized from the room the window actually has, measured a level above where it is used so nothing can feed back, and the picker's own height no longer counts towards the window's minimum height — that screen is built to fill the window, so those two were chasing each other as well.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.18.0" author="CuePort" time="2026-08-12T23:57:25Z">
+        <changelog><![CDATA[
+v1.18.0 — The three screens that never got the card structure now have it: login, pairing and the production picker. Section labels over cards, the same as Settings and the production screen. The picker's search row and the production you would go back to each sit on a card; the list itself is a well, the same recessed surface the comment column uses, and it fills the height it is given instead of a fixed box that left dead window under it on a tall docker and cut the list short on a short one. The disclosure arrows are drawn rather than typed, since the old ones were glyphs and those land in whatever font the platform decides is nearest. On the pairing screen the code is set as a headline, because it is what that screen is for, and Copy is a full-size button like the two beside it. Errors get a card instead of a red line under the screen.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.17.3" author="CuePort" time="2026-08-12T23:48:31Z">
+        <changelog><![CDATA[
+v1.17.3 — The comment markers now come off the ruler when the script exits, so a project is left the way it was found. Nothing is lost: the comments themselves live in the project's own state, so the markers are put back the moment the script runs again on a bound project, and putting them back needs no request. The render start marker is deliberately left alone — that is the ruler origin you set by hand — and so is every marker that is not ours.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.17.2" author="CuePort" time="2026-08-12T23:39:55Z">
+        <changelog><![CDATA[
+v1.17.2 — The comment column is darker: only its top edge now reaches the surface the other cards sit on, and everything below it falls away, so it reads as recessed rather than as a panel laid on top. The floating window's minimum width goes from 668 to 890, a third wider. The old floor predates the column: at 668 the body had exactly the room the column asks for, so it sat right on the edge of stepping aside and the waveform beside it was as thin as it is ever allowed to be. The first-use size now matches that floor instead of sitting under it, where the constraint overrode it anyway.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.17.1" author="CuePort" time="2026-08-12T23:23:43Z">
+        <changelog><![CDATA[
+v1.17.1 — Fix: the comment column was the one light panel on the screen. The window's gradient sits under the cards, and a card is opaque, so giving the column that same gradient put it on top instead of beneath and lifted it above every other surface. It now starts from a base below the standard card colour and carries its own gradient over its full height, which brings the top edge just over that colour and lets it fall away below it further down: the same weight as the cards beside it, with the depth it was missing.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.17.0" author="CuePort" time="2026-08-12T23:07:57Z">
+        <changelog><![CDATA[
+v1.17.0 — Clicking a comment in the list moves the cursor to its pin, using the same conversion the waveform strip does, so it lands in the right place on a project whose ruler has been shifted. Hovering a row lights it as well, not only hovering the pin out in the strip. The list carries the same top-down gradient as the window instead of sitting on a flat panel. Its switch has moved out of the hamburger menu into Settings, under Window: the menu is for things you do, and this is a choice about the layout that stays put once it is made. The CONNECTED pill now has its own smaller face, so it reads as the status it is rather than as a third control; the menu button and the close box beside it are unchanged, and the tests now pin their size so a future change to the pill cannot drag them along. A green check beside "Render start" says at a glance that the marker is really down, which nothing did after the old green line was removed; the offset itself stays behind the "?".
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.16.0" author="CuePort" time="2026-08-12T22:36:59Z">
+        <changelog><![CDATA[
+v1.16.0 — A comment list, and the numbers CuePort measured. The list opens in a column of its own on the left, from the hamburger menu, and stays open across sessions. Hovering a pin in the waveform lights the comment it belongs to in the list, so a mark on the strip and the sentence behind it are one glance apart. It is built like every other card here: same surface, its own shadow. On a narrow window the column steps aside rather than squeezing the waveform down to something you cannot aim at, and comes back when there is room again — the setting is not touched. The empty corner of the production card now carries the loudness of the active version: integrated LUFS, true peak and dynamic range, measured by CuePort when the mix was uploaded. Nothing is shown when a version has no analysis, which is the normal case for anything uploaded before CuePort measured. Needs a worker that returns them; older ones simply leave the corner empty.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.15.2" author="CuePort" time="2026-08-12T22:29:31Z">
+        <changelog><![CDATA[
+v1.15.2 — The connection badge is smaller and has lost its dot. It is the one thing on that row that cannot be clicked, so it should not carry the weight of something that can; the row height it shares with the menu and close buttons is unchanged, the pill is simply shorter and centred in it. The green "render start is set" line under the align card is gone: it appeared whenever Reaper reported any offset at all, including one a project template brought along, so it could claim the markers were anchored while the button beside it was still pulsing for attention. The offset now lives behind the "?" with the rest of the explanation, and only once CuePort's own marker is really on the ruler. The A/B button also takes the width it has rather than a fixed 200, which ran past the edge in a narrow docker.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.15.1" author="CuePort" time="2026-08-12T22:06:33Z">
+        <changelog><![CDATA[
+v1.15.1 — The wordmark carries the window, so it is bigger than a heading now rather than the same size, the mark beside it grew to match, and both sit on a shadow: the glyphs are drawn twice, once offset and dark, which is the only way to get depth out of text when the toolkit has no shadow of its own. A soft light sits behind the mark. The bigger wordmark also had to be kept from running into the connection badge on a narrow docker — the right-hand group is placed from the window edge inwards, so it could be told to start left of where the wordmark ends, and the two would then overlap without anything overflowing. The badge gives way there; the menu button and the close box stay.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.15.0" author="CuePort" time="2026-08-12T21:49:58Z">
+        <changelog><![CDATA[
+v1.15.0 — The production and the waveform are one card. They were always about the same track, and a border between them said otherwise; a hairline separates them now, which groups without boxing. The waveform can no longer be collapsed away either — it is the reason the screen exists, and a header that could hide it only offered a way to make the window less useful. It reads as a recess in the card rather than a second card on top of one: darker than the surface around it, with the top inner edge a shade darker again, and no shadow of its own. Transport and clock share one line under it now instead of taking two, and on a narrow docker the clock drops to its own line rather than pushing the row past the edge.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.14.3" author="CuePort" time="2026-08-12T21:28:49Z">
+        <changelog><![CDATA[
+v1.14.3 — Lighter cards, softer shadow. The card surface lifts off the window by about twice what it did, and everything that sits on a card moves with it — the border, the row separators, the input fields, the hover state — because those are read against the card and not against the window behind it. Raise the surface alone and the border vanishes into it. The shadow ramp is a gentler curve than before, so the ring leaves the edge later and has no point you can put a finger on; the radius cannot grow much (spread plus offset has to stay inside the window margin), so the softness comes from the shape of the ramp instead.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.14.2" author="CuePort" time="2026-08-12T21:21:39Z">
+        <changelog><![CDATA[
+v1.14.2 — The shadow is a drop shadow now, and lighter again. The whole ring moves down and to the right instead of sitting evenly around the card, so the top-left edge keeps only a hairline and the weight collects underneath — which is what makes a card read as sitting above the page rather than glowing on it. Down further than right, matching the light the backdrop already puts in the top-left corner. Spread plus offset still fits inside the window margin, so nothing runs off the edge.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.14.1" author="CuePort" time="2026-08-12T21:15:46Z">
+        <changelog><![CDATA[
+v1.14.1 — Softer shadows. Cards sit a few pixels apart and a card inside a card puts one ring straight onto the other, so what looked right for a single card stacked up on a full screen and left the gaps between cards darker than the cards themselves. The falloff is no longer squared, which spreads the same darkness over more pixels, and the shadow itself is about a third lighter. The card colour is unchanged: it was always the same one the waveform panel uses.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.14.0" author="CuePort" time="2026-08-12T17:19:03Z">
+        <changelog><![CDATA[
+v1.14.0 — The title bar is gone. Reaper's strip above the header carried a collapse arrow, the script name a second time and a close box, none of which the header does not already say. Closing moved into the header as an X beside the menu, and it hides the window the way the old one did rather than ending the script, so the hover tooltip and the pill keep running. The header is now the drag handle. Docked, nothing changes: there the docker draws the tab, not ImGui.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.13.1" author="CuePort" time="2026-08-12T17:13:27Z">
+        <changelog><![CDATA[
+v1.13.1 — The card shadows were being cut off. A card fills its container edge to edge, so the ring around it falls outside the body region, and ImGui clips anything drawn past the edge of the region it belongs to: the sides were removed entirely and the top and bottom trimmed to whatever gap happened to be there. The ring now widens the clip rectangle for the moment it is drawn and puts it straight back. The spread is one shared constant and small enough to stay inside the window margin, so it cannot drift between the cards and the waveform.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.13.0" author="CuePort" time="2026-08-12T17:00:22Z">
+        <changelog><![CDATA[
+v1.13.0 — The window has depth and a face of its own. Inter now ships with the script in two weights, so the interface reads the same on every machine instead of falling back to whatever sans-serif the OS happens to pick; headings and section labels use the heavier weight. Behind the content there is a faint wash and a single brand-coloured light in the top-left corner, and every card and the waveform now sit on a soft shadow. ImGui has no shadow primitive and no blur, so the shadow is built at load time as a small texture with a smooth falloff and nine-sliced around each shape. All of it is optional: on an older ReaImGui, or before the font files have been fetched, the script falls back to exactly the old look.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+        <source file="Inter-Regular.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-Regular.ttf</source>
+        <source file="Inter-SemiBold.ttf">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-SemiBold.ttf</source>
+        <source file="Inter-LICENSE.txt">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/Inter-LICENSE.txt</source>
+      </version>
+      <version name="1.12.4" author="CuePort" time="2026-08-12T11:00:23Z">
+        <changelog><![CDATA[
+v1.12.4 — The button and the menu now share one outline instead of drawing one each. Two borders never land on exactly the same pixel, and that was all three of the edges that still looked frayed: the corner where the button starts, the break where the panel's top edge runs into it, and the step down the right-hand side. The button draws only its surface; the panel leaves its top-right corner square because the button continues that line; and the button's share of the outline is a single open stroke painted over the join, so there is nothing left for two lines to disagree about.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.12.3" author="CuePort" time="2026-08-12T10:43:58Z">
+        <changelog><![CDATA[
+v1.12.3 — The patch that joins the button to the menu is nothing but colour now. It used to draw an outline of its own, which landed half a pixel beside the panel's border and read as the patch poking into the menu's edge; the button underneath already carries a border for the case where the patch cannot be drawn at all. Its right edge also stops a pixel short of the panel's border so that border runs past uninterrupted.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.12.2" author="CuePort" time="2026-08-12T10:38:55Z">
+        <changelog><![CDATA[
+v1.12.2 — Hovering the first row of the menu ("Production") lost the top of its highlight: the patch that carries the button down into the panel reached a pixel further than the corner it has to cover, and the row ran underneath it. The patch now stops level with that corner, and the rows start below it, so a hovered row keeps its whole shape.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.12.1" author="CuePort" time="2026-08-12T10:33:24Z">
+        <changelog><![CDATA[
+v1.12.1 — Three touches on the menu button. Hovering it does something again while the menu is open: the panel paints over the button, so the hover state is carried across and drawn on top instead of being buried. The patch that gets painted over is now exactly the button plus the corner radius it has to cover, rather than a couple of pixels more, which had it reading as a box taller than the button. And the panel's surface colour is pinned for both colour slots a popup might read — the theme paints windows in a darker shade, so a build reading that one gave the menu a different surface from the tab sitting on it.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.12.0" author="CuePort" time="2026-08-12T10:26:01Z">
+        <changelog><![CDATA[
+v1.12.0 — The join between the hamburger and its menu is now simply painted over everything else, last of all. Every previous attempt built it from two halves — the button rubbing out its share of the seam in the header, the panel rubbing out its own — and each half could only paint inside its own window, so whatever was drawn afterwards showed through again. A clip rectangle that replaces the current one instead of narrowing it lets the panel paint upwards over the button, and over any line that happens to be in between.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.11.3" author="CuePort" time="2026-08-12T10:17:04Z">
+        <changelog><![CDATA[
+v1.11.3 — You could still see the menu behind the hamburger. The tab stopped a corner radius below the button, which is enough when the panel sits exactly where it was asked to and leaves daylight when ImGui nudges it a few pixels lower. The tab now carries on well past the button and keeps its side borders: where the panel sits flush the surplus is covered by it, where it does not the surplus is what bridges the gap. Only the tab's bottom edge is rubbed out, so it always opens downwards into the menu.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.11.2" author="CuePort" time="2026-08-12T10:09:04Z">
+        <changelog><![CDATA[
+v1.11.2 — The join between the hamburger and its menu is built differently. Until now the panel drew the whole shape and had to paint outside its own window to reach up to the button, which needs full-screen clipping — and where a ReaImGui build does not offer that, the button fell back to a standalone box floating above the menu. Now each side draws its own half inside its own window: the button draws the tab in the header, the panel opens its top edge underneath it. Same look, no special drawing needed, and one code path instead of two.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.11.1" author="CuePort" time="2026-08-12T09:58:09Z">
+        <changelog><![CDATA[
+v1.11.1 — The tab that joins the hamburger to its menu now shares everything with the panel: one surface colour, one border colour, one corner radius. Before, the tab drew itself in the card colours while ImGui painted the panel with the theme's window border — two different greys meeting in the middle. The stubs of the tab's side borders that hung down inside the panel are gone as well, and how far the tab reaches in is now tied to the corner radius it has to cover, so the two cannot drift apart.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.11.0" author="CuePort" time="2026-08-12T09:44:29Z">
+        <changelog><![CDATA[
+v1.11.0 — The hamburger and its menu now read as one shape. The panel opens flush against the button rather than a few pixels below it, and it draws the joining tab itself: from inside the panel is the only place late enough to cover the panel's own top border and the notch where its rounded corner met the button's straight edge. Three seams gone — the button's bottom edge, the panel's top edge, and the corner between them.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.10.4" author="CuePort" time="2026-08-12T09:41:34Z">
+        <changelog><![CDATA[
+v1.10.4 — The millisecond figure is gone from the status line again. It was added to measure the wait after "Set render start at cursor" and "Clear"; that wait is fixed, so the number has done its job. The status reads "Markers realigned — 12" again.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.10.3" author="CuePort" time="2026-08-12T09:28:17Z">
+        <changelog><![CDATA[
+v1.10.3 — Fix: "Set render start at cursor" and "Clear" still went to the server whenever the production had no comments. v1.10.2 fell back to a full sync when it found nothing cached, but an empty comment list is not the same as never having synced — there was simply nothing to re-place, and the server was asked for a list already known to be empty. Only a missing cache counts as "never synced" now. The status line also reports how long the click took ("Markers realigned — 12 · 4 ms"), so any wait that remains can be measured rather than guessed at.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.10.2" author="CuePort" time="2026-08-12T09:17:38Z">
+        <changelog><![CDATA[
+v1.10.2 — "Set render start at cursor" and "Clear" no longer wait on the network. Moving the ruler origin means every comment marker has to be re-placed, and that was done by fetching the whole comment list from the server again — a round trip in the middle of a click, in that path since v1.3.0. The comments are already cached inside the project and the marker code reads the new offset itself, so the re-placement is local work and finishes with the click. A project that has never synced still falls back to a real sync, because there is nothing cached to re-place.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.10.1" author="CuePort" time="2026-08-12T09:09:28Z">
+        <changelog><![CDATA[
+v1.10.1 — The floating window has a minimum size, not a maximum: make it as large as you like, but not smaller than its own content (that would bring the scrollbar back) and not narrower than two settings tiles. Whether the render start is set is now read from the marker CuePort itself places rather than from Reaper's project time offset — a project template carrying an offset made the button claim to be done on a brand new project, and clearing it only showed after the re-sync. Set and Clear no longer block on that re-sync either: the change lands on screen straight away and the request goes out on the next frame, with a note visible while it runs.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.10.0" author="CuePort" time="2026-08-12T08:50:26Z">
+        <changelog><![CDATA[
+v1.10.0 — Picking a production syncs it straight away, so its current version is in the player without pressing Sync first. "Set render start at cursor" pulses in the brand colour until a render start is actually set, and goes quiet once it is. While floating, the window can no longer be dragged taller than its own content or wider than two settings tiles. The CONNECTED badge and the hamburger are now exactly the same height, and the hamburger is lit while its menu is open — the previous highlight used the window background and was invisible. "Remove" next to the A/B switch, "Set render start at cursor" and "Clear" are ordinary buttons of matching height, centred on their rows. In the waveform, the play cursor and the triangle under it share one whole pixel, and each comment pin sits exactly on its own stem.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.9.2" author="CuePort" time="2026-08-11T23:45:28Z">
+        <changelog><![CDATA[
+v1.9.2 — Fix: the menu was a row and a half too short and showed a scrollbar. Its height was worked out by hand and missed the spacing ImGui puts between items; the panel is now sized to fit its content exactly, so a seven-line menu never scrolls. Fix: two rows could be marked as current at the same time — the production picker stays armed while you step into the settings, so asking it alone marked both. Only the screen you are actually looking at is marked now.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.9.1" author="CuePort" time="2026-08-11T23:36:19Z">
+        <changelog><![CDATA[
+v1.9.1 — The menu opens inside the window: right-aligned under the hamburger and clamped to the window, instead of being dropped wherever ImGui felt like it — which put the panel outside the script window and over Reaper's arrange view. While it is open the hamburger stays lit in the menu's own colour and loses its bottom rounding, so button and panel read as one shape. New first entry "Production" takes you straight back to the current version and its player from anywhere, and the row for the screen you are on is marked rather than dropped from the list.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.9.0" author="CuePort" time="2026-08-11T23:24:02Z">
+        <changelog><![CDATA[
+v1.9.0 — The Settings button in the header has become a hamburger, and the whole navigation lives behind it: Sync comments, Change production, Settings (Back while you are on it), Check dependencies, Log out and Quit script. The screens now carry their content and nothing else — the "Choose different production" button at the bottom of the production screen, the Back button on the settings screen and the Account tile have all moved into the menu.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.8.0" author="CuePort" time="2026-08-11T23:12:32Z">
+        <changelog><![CDATA[
+v1.8.0 — Settings arranges its groups as tiles: two columns while the window is wide, stacked again once it is narrow. Each tile keeps exactly the same content either way, only its place on the screen changes. The explanation above "Set render start at cursor" has moved behind a "?" as well, matching every description in Settings — that card is now a row you can scan instead of a paragraph you have to read.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.9" author="CuePort" time="2026-08-11T23:03:14Z">
+        <changelog><![CDATA[
+v1.7.9 — Fix: the main screen could still be pushed sideways once the window was made narrow. Several rows kept a fixed width and ran past the edge — the A/B switch (a fixed 300 px next to the "?" and Remove), the "Sync comments" and "Set render start at cursor" buttons, and a few long one-line notes that never wrapped. They now shrink with the window and wrap instead. The settings screen was never affected, which is what pointed at the rows rather than the container.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.8" author="CuePort" time="2026-08-11T22:48:54Z">
+        <changelog><![CDATA[
+v1.7.8 — Fix: the window could be dragged sideways. Making room for the scrollbar in v1.7.7 stretched the scrolling region past the window edge, and content wider than its window is content that scrolls horizontally. The margins are now made from the inside instead — the region fills the window edge to edge, the content is indented on the left and holds a gutter on the right — so the look is the same and nothing slides.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.7" author="CuePort" time="2026-08-11T22:40:10Z">
+        <changelog><![CDATA[
+v1.7.7 — Equal margins on the left and the right, with the scrollbar inside the right one rather than beside it. The scrolling region now reaches over the padding to the window edge, which is where ImGui draws the bar, and the content is held back to the same margin on both sides. So the content sits symmetrically, the bar appears in the margin that was already free, and the content width still does not change when it shows up.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.6" author="CuePort" time="2026-08-11T22:25:59Z">
+        <changelog><![CDATA[
+v1.7.6 — The scrollbar no longer sits flush against the content. The gutter is kept a little wider than the bar itself, so when it appears it lands in the space that was already being held free, with a gap still showing between it and the content. The usable content width is unchanged whether the bar is there or not, as before.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.5" author="CuePort" time="2026-08-11T22:19:51Z">
+        <changelog><![CDATA[
+v1.7.5 — The scrollbar shows only when there is something to scroll again, and the content still does not jump sideways when it appears. The content sits in an inner region that holds a gutter exactly as wide as the scrollbar while there is none, and gives that width back once ImGui takes it for the bar — so the usable width is the same either way.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.4" author="CuePort" time="2026-08-11T22:10:21Z">
+        <changelog><![CDATA[
+v1.7.4 — Fix: the section rules were drawn out to the window edge rather than the content edge, so inside the scrolling body they ran underneath the scrollbar. The permanent scrollbar is quieter too: 10 px instead of 14, no track behind it, and a dim grab.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.3" author="CuePort" time="2026-08-11T22:04:43Z">
+        <changelog><![CDATA[
+v1.7.3 — The header no longer scrolls away: brand, connection badge and Settings stay put while the content below scrolls in its own region. That region keeps its scrollbar shown at all times, so content no longer shifts sideways when a screen grows past the window. Wider left and right margins, and the Settings button is now positioned from measured widths — the old fixed estimate was three pixels too narrow and clipped it.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.2" author="CuePort" time="2026-08-11T21:54:08Z">
+        <changelog><![CDATA[
+v1.7.2 — A/B compare is now a two-up switch: "Your mix" and "CuePort version" side by side in one outline, with the one you are hearing filled in. The old single button described what it would switch to and left you working out what was playing. The connection badge in the header is drawn in one piece so its dot and text line up, and the settings screen is tighter now that the descriptions have moved into the "?" markers.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.1" author="CuePort" time="2026-08-11T21:43:06Z">
+        <changelog><![CDATA[
+v1.7.1 — The explanation under each setting is now a "?" next to its label that shows the text on hover. Every description is still there, but the cards are roughly half as tall and can be scanned at a glance.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.7.0" author="CuePort" time="2026-08-11T21:32:37Z">
+        <changelog><![CDATA[
+v1.7.0 — Redesigned interface. Content sits in cards under small section labels instead of floating between separators, there is a proper type hierarchy instead of one size for everything, switches replace checkboxes, and the main action on each screen is a filled button. The waveform is now rounded bars that light up in the brand colour as playback passes them, with comment pins on top instead of full-height lines cutting through it, plus a position and length readout underneath. The header carries a connection badge.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.9" author="CuePort" time="2026-08-11T21:18:32Z">
+        <changelog><![CDATA[
+v1.6.9 — The floating window can be resized again. It opened at 520x600 and re-applied that size every frame with NoResize set, so the edges could not be dragged. Now it is 520x600 the first time and whatever you drag it to afterwards (ImGui remembers the size), with a minimum of 380x320 so the waveform and lists stay usable. Wrapped help text follows the window width instead of breaking at a fixed 460 px.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.8" author="CuePort" time="2026-08-11T21:05:32Z">
+        <changelog><![CDATA[
+v1.6.8 — The transport-attach option no longer names another script in its label. It now reads simply "Attach to transport".
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.7" author="CuePort" time="2026-08-11T20:59:15Z">
+        <changelog><![CDATA[
+v1.6.7 — The extra dock probe added in v1.6.4 is gone again. Measured in Reaper: docked reads ImGui dock id -1 while Reaper reports docker index 0, floating reads id 0 while Reaper reports -1. The two agree, so asking Reaper separately walked the window list twice a second only to confirm what the id already said. The ImGui dock id is the single source again, and Settings > Diagnostics still prints it.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.6" author="CuePort" time="2026-08-11T20:53:25Z">
+        <changelog><![CDATA[
+v1.6.6 — Settings now explains how to undock by hand. A Reaper docker has two drag handles: the tab bar (reveal it with the small arrow at the top left) undocks this window, while the arrow itself drags the whole docker out and leaves the window inside it. The second case produces a floating docker, so the window stays a docker child and still counts as docked — which is correct, not a glitch.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.5" author="CuePort" time="2026-08-11T20:46:43Z">
+        <changelog><![CDATA[
+v1.6.5 — Fix: v1.6.3 removed the undock control on the assumption that dragging the window out of a docker is a reliable way back to floating. It is not — the window can stay a docker child through the drag — which left no way out of the docker at all. The single button carries both directions again: "Undock window" while docked, "Dock in Reaper" while floating.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.4" author="CuePort" time="2026-08-11T20:40:09Z">
+        <changelog><![CDATA[
+v1.6.4 — Fix: dragging the window out of a docker left it in the docked state. ImGui's dock id only says the window sits in a ReaImGui docker host, and it keeps saying so for a floating docker — which is exactly what you get when the docker's own tab is dragged out. Reaper is now asked directly (DockIsChildOfDock via JS_ReaScriptAPI) and its answer wins; the ImGui id stays as the fallback and still carries the one case Reaper cannot see, namely being docked inside another ImGui window. Settings > Diagnostics shows the raw readings so a disagreement can be reported instead of guessed at.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.3" author="CuePort" time="2026-08-11T20:31:07Z">
+        <changelog><![CDATA[
+v1.6.3 — Settings has one docking control again instead of two: a single "Dock in Reaper" button. Leaving the docker is a drag, like every other Reaper window. Deliberately not a toggle: Reaper has floating dockers, so a window dragged out by the docker's own tab still is a docker child, and a toggle labelled from that state would offer "undock" for something the user already considers undocked.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.2" author="CuePort" time="2026-08-11T20:16:54Z">
+        <changelog><![CDATA[
+v1.6.2 — Fix: dragging the main window out of a Reaper docker left it stuck in the "docked" state, and the Settings toggle could then only ever request undocking, never docking. Dock state now follows the window's dock id (0 = undocked, -1..-16 = a Reaper docker) instead of a second, separate flag that could disagree with it. The toggle is two explicit buttons, Dock and Float, so it cannot get stuck either way.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.1" author="CuePort" time="2026-08-11T20:02:09Z">
+        <changelog><![CDATA[
+v1.6.1 — Fix: logging out could leave the script running with nothing on screen. Neither pill variant draws without a token, so a token-less instance whose window was hidden was invisible while still running — Reaper then answered the next launch with "script is already running", and terminating it just started another invisible one. Logging out now brings the window up, and the "start in background" option is ignored until a token exists.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.6.0" author="CuePort" time="2026-08-11T18:00:00Z">
+        <changelog><![CDATA[
+v1.6.0 — Fix: a project saved while A/B compare was loaded no longer asks for missing audio when you re-open it. The reference audio is stored in a "CuePort A-B" folder next to the project instead of a temp file that gets deleted, and it is never removed while a saved .rpp still points at it. A reference track that comes back with a re-opened project is swept out on load and the master mute is restored with it. Downloads are keyed by version id, so a file that is still on disk is reused and a new version never A/Bs against stale audio.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.5.2" author="CuePort" time="2026-07-01T18:30:00Z">
+        <changelog><![CDATA[
+v1.5.2 — Fix: the binding now also updates when you open another project into the same tab (File > Open), not just on tab switches. The stored per-project binding is followed directly instead of relying on detecting how the project changed.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.5.1" author="CuePort" time="2026-07-01T17:00:00Z">
+        <changelog><![CDATA[
+v1.5.1 — Fix: the per-project production binding is now reloaded when you switch/open a project (and while a project finishes loading after start-up), so a bound project no longer forces you to pick the production again. Bound view is also resilient when the production list can't be resolved yet.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.5.0" author="CuePort" time="2026-07-01T15:00:00Z">
+        <changelog><![CDATA[
+v1.5.0 — Floating pill can now attach straight to Reaper's transport: it's drawn onto the transport window and can be dragged around inside it, click for the menu, right-click to detach. Enable under Settings > Quick access (requires the JS_ReaScriptAPI extension).
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.4.0" author="CuePort" time="2026-07-01T12:00:00Z">
+        <changelog><![CDATA[
+v1.4.0 — Dockable main window: drag it into any Reaper docker or toggle it from Settings > Window; the docked position is remembered between sessions. New "Start in background" option (Settings > Startup) so auto-start launches without popping the main window open.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.3.0" author="CuePort" time="2026-06-15T22:00:00Z">
+        <changelog><![CDATA[
+v1.3.0 — A/B compare: load the active CuePort version into a hidden reference track and toggle playback between it and your DAW mix under one synced transport. The reference bypasses the project master and plays straight to hardware outputs 1/2. Temporary — removed on production switch, "Remove", or script exit.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.2.1" author="CuePort" time="2026-06-15T21:30:00Z">
+        <changelog><![CDATA[
+v1.2.1 — Clicking the waveform during playback draws a faint "pending" line at the target until the play cursor catches up (Reaper defers the seek to the next bar while playing), giving immediate visual feedback.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.2.0" author="CuePort" time="2026-06-15T21:10:00Z">
+        <changelog><![CDATA[
+v1.2.0 — Waveform now shows the live DAW play/edit cursor and is clickable: click or drag to move the DAW cursor (and seek playback) to that spot. Added Play/Pause + Stop transport buttons.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.1.0" author="CuePort" time="2026-06-15T12:00:00Z">
+        <changelog><![CDATA[
+v1.1.0 — Waveform block in the main window: the active version's peaks are drawn with the artist comments overlaid as markers (hover to read). Graceful fallback when no waveform/length is stored.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+      <version name="1.0.0" author="CuePort" time="2026-04-19T00:59:19Z">
+        <changelog><![CDATA[
+v1.0.0 — Initial release.
+        ]]></changelog>
+        <source main="main">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_sync.lua</source>
+        <source file="cueport_icon.png">https://raw.githubusercontent.com/m3lotunes/reaper-scripts/main/CuePort%20Sync/cueport_icon.png</source>
+      </version>
+    </reapack>
+  </category>
+</index>
