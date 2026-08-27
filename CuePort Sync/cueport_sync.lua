@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.30.6
+-- @version 1.34.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -86,7 +86,7 @@
 
 local K = {}
 
-K.VERSION            = '1.30.6'
+K.VERSION            = '1.34.0'
 K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 K.EXT_NS                 = 'CuePort'
@@ -455,27 +455,56 @@ local function cfgQ(s)
   return (tostring(s or ''):gsub('\\', '\\\\'):gsub('"', '\\"'))
 end
 
+-- What curl exited with, in words. Only the codes that can really happen to this
+-- script, and only because "exit 35" tells a producer nothing about what to do
+-- next. The number is kept either way: it is the part I can look up.
+local CURL_WHY = {
+  [6]  = 'the host could not be resolved',
+  [7]  = 'the connection was refused',
+  [18] = 'the transfer ended early',
+  [28] = 'it timed out',
+  [35] = 'the TLS handshake failed',
+  [52] = 'the server answered nothing',
+  [55] = 'sending the data failed',
+  [56] = 'receiving the answer failed',
+  [60] = 'the certificate could not be verified',
+}
+local function curlWhy(exitCode)
+  local why = CURL_WHY[exitCode]
+  return 'no answer (curl ' .. tostring(exitCode) .. (why and (': ' .. why) or '') .. ')'
+end
+
 -- Perform an HTTP request using a curl config file (avoids shell-escape hell).
 -- Returns: status_code (number), body (string), error (string or nil)
-local function httpRequest(method, url, headers, bodyStr)
+-- `opts.maxTime` overrides the 30 s ceiling, `opts.bodyFile` sends a file that
+-- is already on disk instead of a string. Both exist for one caller: an upload
+-- part is megabytes, not a JSON line -- thirty seconds is not enough for it, and
+-- copying it through a Lua string into a second temp file would double the
+-- writing for nothing.
+local function httpRequest(method, url, headers, bodyStr, opts)
+  opts = opts or {}
   local cfgPath  = tmpPath('req.cfg')
   local bodyPath = tmpPath('req.body')
   local respPath = tmpPath('resp.body')
+  local maxTime  = opts.maxTime or 30
 
   -- Write body if present
-  if bodyStr and #bodyStr > 0 then
+  if opts.bodyFile then
+    bodyPath = opts.bodyFile
+  elseif bodyStr and #bodyStr > 0 then
     if not writeFile(bodyPath, bodyStr) then
       return nil, nil, 'Failed to write body temp file'
     end
   end
 
   -- Build curl config file
-  local cfg = { '--silent', '--show-error', '--connect-timeout 10', '--max-time 30' }
+  local cfg = { '--silent', '--show-error', '--connect-timeout 10',
+                '--max-time ' .. tostring(math.floor(maxTime)) }
   cfg[#cfg+1] = '--request ' .. method
   for k, v in pairs(headers or {}) do
     cfg[#cfg+1] = 'header = "' .. cfgQ(k .. ': ' .. v) .. '"'
   end
-  if bodyStr and #bodyStr > 0 then
+  if opts.bodyFile or (bodyStr and #bodyStr > 0) then
     cfg[#cfg+1] = 'data-binary = "@' .. cfgQ(bodyPath) .. '"'
   end
   -- Write status code on its own line at the end of the body file
@@ -489,7 +518,7 @@ local function httpRequest(method, url, headers, bodyStr)
 
   -- Execute curl
   local curlCmd = curlBinary() .. ' --config "' .. cfgPath .. '"'
-  local raw = r.ExecProcess(curlCmd, 35000)
+  local raw = r.ExecProcess(curlCmd, math.floor(maxTime * 1000) + 5000)
   local exitCode, curlOut = parseExecOutput(raw)
 
   local body = readFile(respPath) or ''
@@ -499,12 +528,17 @@ local function httpRequest(method, url, headers, bodyStr)
 
   -- Cleanup
   deleteFile(cfgPath)
-  if bodyStr then deleteFile(bodyPath) end
+  if bodyStr and not opts.bodyFile then deleteFile(bodyPath) end
   deleteFile(respPath)
 
-  if not status then
-    local hint = curlOut ~= '' and (' ' .. curlOut) or ''
-    return nil, body, 'curl failed (exit ' .. tostring(exitCode) .. ')' .. hint
+  -- `%{http_code}` is 000 when curl never got an answer at all -- a refused
+  -- connection, a dropped handshake, a timeout, a connection that died halfway
+  -- through the body. That is not status zero: there is no such status. Read as
+  -- one it came out of the upload page as "Stopped: HTTP 0", which names
+  -- nothing and leaves nothing to try. Same branch as no status line at all,
+  -- and curl's exit code is what actually says what happened.
+  if not status or status == 0 then
+    return nil, body, curlWhy(exitCode)
   end
 
   return status, body, nil
@@ -543,6 +577,16 @@ local state = {
 
   -- API / auth
   apiUrl = K.API_URL,
+  -- What the worker we are talking to says it can do, taken from the answer
+  -- of every productions/comments call. Empty means "it did not say", which
+  -- is what a build from before the capability list looks like.
+  --
+  -- This is how a route can differ WITHOUT a setting: a switch has to be
+  -- found, understood and turned back off, and one left on quietly sends
+  -- real work to a build nobody signed off. Asking the worker needs no
+  -- maintenance at either end -- the day production lists a capability,
+  -- the deviation stops by itself and there is nothing here to remove.
+  apiFeatures = {},
   token = nil,
 
   -- Pairing
@@ -598,6 +642,9 @@ local state = {
   -- the answer it sends back is adopted.
   versions = nil,
   versionsForId = nil,
+  -- Which binding the persisted list has already been looked for under, so a
+  -- production without one does not re-read the project file every frame.
+  versionsTriedFor = nil,
   selectedVersionId = nil,
   -- Which kind was pressed in the picker, until the first sync answers with a
   -- version id. Not persisted: it is a question, not a setting.
@@ -717,6 +764,8 @@ local state = {
 -- Load persisted state
 local function loadState()
   state.apiUrl = K.API_URL
+  state.apiFeatures = {}
+  state.studioName = getGlobalExt(K.STUDIO_NAME_KEY)
 
   -- One-time migration: older script versions stored the token under a
   -- host-specific key (`token_prod` / `token_preview`). Migrate whichever
@@ -823,6 +872,18 @@ local function apiTry(attempt, isNew)
   return resp, err   -- production's answer is still the one that counts
 end
 
+-- Remember what the worker said it can do. Every productions/comments answer
+-- carries the list; an answer without one is a build from before it existed,
+-- and that is exactly the case this is here to notice.
+local function apiNoteFeatures(res)
+  if type(res) ~= 'table' then return end
+  local set = {}
+  if type(res.features) == 'table' then
+    for _, f in ipairs(res.features) do set[tostring(f)] = true end
+  end
+  state.apiFeatures = set
+end
+
 local function apiProductions()
   local function attempt(base)
     local status, body, err = httpGET(base .. '/reaper/productions', authHeaders())
@@ -845,6 +906,19 @@ local function apiProductions()
     return false
   end)
   if not resp then return nil, err end
+  apiNoteFeatures(resp)
+  -- The studio's name comes back with every sync now, not only with the
+  -- pairing. Devices paired before the header showed it have nothing stored,
+  -- and a studio that renames itself would otherwise keep the old name for
+  -- ever. Only overwritten when the worker actually said something -- an older
+  -- worker omits the field, and blanking a good name over that would put
+  -- CONNECTED back.
+  if type(resp.studio_name) == 'string' and resp.studio_name ~= '' then
+    if resp.studio_name ~= state.studioName then
+      state.studioName = resp.studio_name
+      setGlobalExt(K.STUDIO_NAME_KEY, state.studioName)
+    end
+  end
   return resp.productions
 end
 
@@ -874,7 +948,9 @@ local function apiComments(productionId, versionId, trackType)
   end
   -- `versions` is the signal: the new worker always sends the list (an empty
   -- one for a production with no uploads), the old one has no such field.
-  return apiTry(attempt, function(res) return res.versions ~= nil end)
+  local resp, err = apiTry(attempt, function(res) return res.versions ~= nil end)
+  apiNoteFeatures(resp)
+  return resp, err
 end
 
 -- Write a reply back to CuePort. The server builds the stored message (it is
@@ -1000,6 +1076,11 @@ K.RS_MARKER_ON_KEY   = 'render_marker_on'
 -- proof; with the marker switched off there is nothing to look at, so the fact
 -- is written down here as well. Per project, because that is what it describes.
 K.RENDER_START_KEY   = 'render_start_set'
+-- Which studio this device is paired to. Kept globally, like the token, and
+-- shown in the header: a badge saying CONNECTED answers "is there a token",
+-- which was never the question. The name is the answer, and a name that is not
+-- yours is worth noticing.
+K.STUDIO_NAME_KEY    = 'studio_name'
 -- Which version of the production this project is looking at. Per project,
 -- like the binding itself: two .rpp files bound to the same production may
 -- well be working on different versions of it.
@@ -1030,22 +1111,36 @@ K.COMMENTS_MIN_ROOM  = 520
 
 -- Metrics ride along in the same cache entry rather than in one of their own:
 -- they belong to exactly the same version as the peaks, so a second store
--- would be a second thing that can go stale on its own.
-local function saveWaveformCache(peaks, duration, filename, versionId, metrics)
+-- would be a second thing that can go stale on its own. The version LIST is in
+-- here for the same reason: without it a restart came back with the binding,
+-- the waveform and the numbers, but no version switcher and no version pills --
+-- they only appeared after the first Sync, which made them look like something
+-- syncing creates rather than something the production has.
+--
+-- `production_id` is written with it and checked on the way out. The entry is
+-- one per PROJECT, not one per production: bind another production in the same
+-- project and the old entry is still sitting there, so without the check the
+-- next read hands one production's peaks and one production's version list to
+-- another one. An entry from a build before this field is refused and refills
+-- itself on the next sync.
+local function saveWaveformCache(e)
   setProjExt(K.WAVEFORM_CACHE_KEY, json.encode({
-    peaks = peaks or {},
-    duration = duration,
-    filename = filename,
-    version_id = versionId,
-    metrics = metrics,
+    production_id = e.productionId,
+    peaks    = e.peaks or {},
+    duration = e.duration,
+    filename = e.filename,
+    version_id = e.versionId,
+    metrics  = e.metrics,
+    versions = e.versions,
   }))
 end
 
-local function loadWaveformCache()
+local function loadWaveformCache(productionId)
   local raw = getProjExt(K.WAVEFORM_CACHE_KEY)
   if not raw or raw == '' then return nil end
   local ok, parsed = pcall(json.decode, raw)
   if not ok or type(parsed) ~= 'table' then return nil end
+  if not productionId or parsed.production_id ~= productionId then return nil end
   if type(parsed.peaks) ~= 'table' then parsed.peaks = {} end
   return parsed
 end
@@ -1107,10 +1202,18 @@ end
 -- to current edit cursor". This is version-proof across Reaper builds.
 K.ACTION_SET_TIMEOFFS_TO_CURSOR = 43345
 
-local function setRenderStartAtCursor()
-  local cursor = r.GetCursorPosition()
+-- `pos` rather than always the cursor: a render bounded by a time selection
+-- knows exactly where the file begins (GetSet_LoopTimeRange), and having to put
+-- the cursor there first to say so would be a step the script can take itself.
+-- The action reads the edit cursor, so the cursor is moved, the action run, and
+-- the cursor put back -- the same three steps clearRenderStart already used.
+local function setRenderStartAt(pos)
+  local cursor = tonumber(pos) or r.GetCursorPosition()
+  local savedCursor = r.GetCursorPosition()
   r.Undo_BeginBlock()
+  if cursor ~= savedCursor then r.SetEditCurPos(cursor, false, false) end
   r.Main_OnCommand(K.ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
+  if cursor ~= savedCursor then r.SetEditCurPos(savedCursor, false, false) end
 
   -- Written down whether or not the marker is drawn: with the marker switched
   -- off there is nothing on the ruler to read the answer off, and "is the
@@ -1133,6 +1236,10 @@ local function setRenderStartAtCursor()
   r.UpdateTimeline()
   r.Undo_EndBlock('CuePort: Set render start', -1)
   return true
+end
+
+local function setRenderStartAtCursor()
+  return setRenderStartAt(r.GetCursorPosition())
 end
 
 -- Clear the project time offset (back to 0:00 at internal 0) and remove the
@@ -1359,6 +1466,10 @@ local function pollPairing()
   end
   if resp.status == 'approved' and resp.access_token then
     saveToken(resp.access_token)
+    -- Older workers do not send it. An empty name simply falls back to the old
+    -- label rather than showing a blank pill.
+    state.studioName = resp.studio_name or ''
+    setGlobalExt(K.STUDIO_NAME_KEY, state.studioName)
     state.deviceCode = nil
     state.userCode = nil
     state.verificationUrl = nil
@@ -1391,6 +1502,9 @@ local Art = {}
 
 local function logout()
   saveToken(nil)
+  state.studioName = nil
+  state.up, state.upload = nil, nil
+  delGlobalExt(K.STUDIO_NAME_KEY)
   -- Everything the session was showing goes with the token. It is all studio
   -- content: the list, the production, its waveform, its numbers, its comments.
   -- Leaving any of it up means a logged-out script still displaying the work of
@@ -1402,6 +1516,7 @@ local function logout()
   state.metrics = nil
   state.versionFilename, state.versionId = nil, nil
   state.versions, state.versionsForId, state.selectedVersionId = nil, nil, nil
+  state.versionsTriedFor = nil
   state.versionSwitchFrom, state.pendingTrackType = nil, nil
   state.replyTo, state.replyText, state.replyStatus, state.replyPending = nil, '', nil, nil
   state.delArm, state.delPending = nil, nil
@@ -1586,6 +1701,7 @@ K.UPD_INDEX_URL  = 'https://raw.githubusercontent.com/m3lotunes/reaper-scripts/'
 K.UPD_CHECK_KEY  = 'upd_check'      -- '0' turns the check off
 K.UPD_LAST_KEY   = 'upd_last'       -- os.time() of the last completed check
 K.UPD_SEEN_KEY   = 'upd_seen'       -- version found then
+K.UPD_LAST_VER_KEY = 'upd_last_ver' -- the version that DID that check
 K.UPD_SIZE_KEY   = 'upd_size'       -- and its size in bytes
 K.UPD_FIX_KEY    = 'upd_repo_fix'   -- repair note for the ReaPack path
 K.UPD_EVERY_SEC  = 86400            -- once a day is plenty for a script
@@ -1686,20 +1802,20 @@ end
 -- ── The check ────────────────────────────────────────────────────────────────
 
 function Upd.due()
-  -- An answer that names something OLDER than what we run is stale knowledge:
-  -- we got past it by some other route (ReaPack's own browser, a hand-install),
-  -- so the stored line describes a version that no longer exists here and the
-  -- timestamp beside it should not hold the next look back.
+  -- Which version ASKED, not which version was found. The stored answer belongs
+  -- to the build that fetched it, so a different build -- an update, a ReaPack
+  -- downgrade, a hand-installed copy that is ahead of the release -- is worth
+  -- one fresh look. Exactly one: the next check writes this key, and the daily
+  -- rule takes over again.
   --
-  -- An answer that names our OWN version must NOT reopen the budget. That is
-  -- the ordinary, healthy state -- checked today, nothing new -- and it is what
-  -- finishCheck writes every single time the check comes back clean. Treating
-  -- it as spent made due() permanently true: poll() started a check, finished
-  -- it a quarter second later, wrote the same version back, and started the
-  -- next one. The card blinked between spinner and result, and the script
-  -- asked GitHub for the same 200 bytes for as long as it ran.
-  local seen = getGlobalExt(K.UPD_SEEN_KEY)
-  if seen ~= '' and Upd.cmp(seen, K.VERSION) < 0 then return true end
+  -- This used to compare the ANSWER against ourselves ("an answer older than us
+  -- is stale, so look again"), which is true and, as a condition, never stops
+  -- being true: the fresh answer names the same older version, so the next
+  -- frame asks again. On a build ahead of the release that meant the card sat
+  -- on "Checking..." for as long as the script ran and Github was asked for the
+  -- same 200 bytes over and over. Reported from the device on 2026-08-23; the
+  -- same shape as the 1.30.5 loop, from the other direction.
+  if getGlobalExt(K.UPD_LAST_VER_KEY) ~= K.VERSION then return true end
   local last = tonumber(getGlobalExt(K.UPD_LAST_KEY)) or 0
   return (os.time() - last) >= K.UPD_EVERY_SEC
 end
@@ -1747,6 +1863,7 @@ function Upd.finishCheck(job)
   local total = hdr:match('[Cc]ontent%-[Rr]ange:%s*bytes%s+%d+%-%d+/(%d+)')
   if total then size = tonumber(total) end
   setGlobalExt(K.UPD_LAST_KEY, tostring(os.time()))
+  setGlobalExt(K.UPD_LAST_VER_KEY, K.VERSION)
   setGlobalExt(K.UPD_SEEN_KEY, ver)
   setGlobalExt(K.UPD_SIZE_KEY, size and tostring(size) or '')
   return true
@@ -2166,6 +2283,82 @@ end
 --   • a reference track that comes back with a re-opened project is detected
 --     and cleaned out, which frees the file on the next save
 
+-- Peaks are built asynchronously. Ask for them before they exist and Reaper
+-- hands out a buffer of zeros; leave them unbuilt and Reaper does the work
+-- itself whenever it feels the need -- which, for a file it has no peak cache
+-- for, is every time the arrange view comes back to the front. Mode 0 says how
+-- many passes are left, mode 1 works at one, mode 2 finishes.
+--
+-- Two ceilings, not one. The clock is the ceiling that matters in Reaper; the
+-- spin count is the one that matters anywhere the clock does not move, and a
+-- loop whose only exit is a clock is a hang waiting for a stopped one.
+local function ensurePeaks(src, seconds)
+  if not src then return end
+  if not r.APIExists or not r.APIExists('PCM_Source_BuildPeaks') then return end
+  local okB, need = pcall(r.PCM_Source_BuildPeaks, src, 0)
+  if not okB or not need or need == 0 then return end
+  local t0, left, spins = r.time_precise(), need, 0
+  while left ~= 0 and spins < 20000 and (r.time_precise() - t0) < (seconds or 10) do
+    local ok2, res = pcall(r.PCM_Source_BuildPeaks, src, 1)
+    if not ok2 then break end
+    left = res
+    spins = spins + 1
+  end
+  pcall(r.PCM_Source_BuildPeaks, src, 2)
+end
+
+-- Reaper redraws the track list when it feels like it, not when the track list
+-- changes. Add a track and hide it in the same pass and the TCP can keep
+-- showing it, and the Track Manager -- if it was already open -- can keep
+-- showing nothing, until something else forces a redraw: a click in the TCP,
+-- or the next track the user adds. Reported from the forum, and it has been
+-- like this since v1.28 (the function that builds the reference is byte for
+-- byte the same there). This is the call that says "now".
+--
+-- Four things, because they are four different things, and it turned out that
+-- only the last one reaches the Track Manager.
+--
+-- TrackList_AdjustWindows redraws the TCP and the mixer. That works -- the
+-- reference disappears from the arrange at once. CSurf_SetTrackListChange
+-- announces the change to control surfaces. Neither wakes the Track Manager:
+-- it kept showing nothing until the user clicked somewhere, and a click is a
+-- SELECTION change. That is what it watches.
+--
+-- Guessed twice and wrong twice, so the third time it was measured instead:
+-- test/reaper-probe-trackmanager.lua walks nine candidates in the user's own
+-- Reaper and asks after each one. It named this one, with the control (nothing
+-- called) answering no -- so it is not the dialog doing it.
+--
+-- The touch is arranged so his own selection is never disturbed: an
+-- UNSELECTED track is selected and unselected again. Only if every track in
+-- the project is already selected does it go the other way round, and then it
+-- puts it back in the same breath.
+local function touchTrackSelection(pref)
+  if not r.SetTrackSelected or not r.IsTrackSelected then return end
+  local tr = (pref and not r.IsTrackSelected(pref)) and pref or nil
+  if not tr then
+    for i = 0, r.CountTracks(0) - 1 do
+      local t = r.GetTrack(0, i)
+      if t and not r.IsTrackSelected(t) then tr = t; break end
+    end
+  end
+  if tr then r.SetTrackSelected(tr, true); r.SetTrackSelected(tr, false); return end
+  -- Everything is selected. Deselect and reselect the first one -- a change
+  -- either way is a change, and this one is undone immediately.
+  local t = r.GetTrack(0, 0)
+  if t then r.SetTrackSelected(t, false); r.SetTrackSelected(t, true) end
+end
+
+local function refreshTrackList(pref)
+  if r.CSurf_SetTrackListChange then pcall(r.CSurf_SetTrackListChange) end
+  if r.TrackList_AdjustWindows then pcall(r.TrackList_AdjustWindows, false) end
+  if r.TrackList_UpdateAllExternalSurfaces then
+    pcall(r.TrackList_UpdateAllExternalSurfaces)
+  end
+  pcall(touchTrackSelection, pref)
+  if r.UpdateArrange then pcall(r.UpdateArrange) end
+end
+
 -- (The table itself is declared further up, above logout, which has to be able
 -- to tear the reference down.)
 function AB.globalCacheDir()
@@ -2327,13 +2520,17 @@ end
 
 -- Build (or rebuild) the hidden reference track from a downloaded file.
 function AB.buildTrack(filePath)
+  -- InsertTrackAtIndex makes a VISIBLE track, and it is two calls later that it
+  -- is hidden. Without this the user gets a track flashing into his arrange for
+  -- a frame -- or, worse, staying there, because nothing told Reaper to redraw.
+  r.PreventUIRefresh(1)
   local old = AB.find()
   if old then r.DeleteTrack(old) end
 
   local idx = r.CountTracks(0)
   r.InsertTrackAtIndex(idx, false)
   local tr = r.GetTrack(0, idx)
-  if not tr then return false, 'Could not create track' end
+  if not tr then r.PreventUIRefresh(-1); refreshTrackList(); return false, 'Could not create track' end
 
   r.GetSetMediaTrackInfo_String(tr, 'P_NAME', K.AB_TRACK_NAME, true)
   r.GetSetMediaTrackInfo_String(tr, K.AB_TRACK_EXT_KEY, AB.ownerId(), true)
@@ -2353,13 +2550,26 @@ function AB.buildTrack(filePath)
   -- render-start), matching the comment markers + waveform mapping.
   local offset = getProjectStartOffset()
   local src = r.PCM_Source_CreateFromFile(filePath)
-  if not src then r.DeleteTrack(tr); return false, 'Could not read audio file' end
+  if not src then
+    r.DeleteTrack(tr)
+    r.PreventUIRefresh(-1); refreshTrackList()
+    return false, 'Could not read audio file'
+  end
+  -- Build the peak cache once, here, while the user is already waiting for the
+  -- download. Without it Reaper carries the reference with no cache on disk and
+  -- re-reads the whole file every time the window comes back to the front --
+  -- reported as "the A/B peaks are computed again" after a minimise or an
+  -- alt-tab. The file sits beside the project (or in our own cache folder), so
+  -- the .reapeaks Reaper writes lands somewhere we already clean up.
+  ensurePeaks(src, 20)
   local item = r.AddMediaItemToTrack(tr)
   local take = r.AddTakeToMediaItem(item)
   r.SetMediaItemTake_Source(take, src)
   r.SetMediaItemInfo_Value(item, 'D_POSITION', -offset)
   r.SetMediaItemInfo_Value(item, 'D_LENGTH', r.GetMediaSourceLength(src) or 0)
   r.UpdateItemInProject(item)
+  r.PreventUIRefresh(-1)
+  refreshTrackList(tr)
   return true
 end
 
@@ -2397,6 +2607,7 @@ function AB.remove(keepAudio)
     r.Undo_BeginBlock()
     r.DeleteTrack(tr)
     r.Undo_EndBlock('CuePort: remove A/B reference', -1)
+    refreshTrackList()
   end
   AB.setMasterMuted(false)
   if state.ab.tempPath then
@@ -2436,6 +2647,7 @@ function AB.cleanupStrays()
   end
   if not removed then return end
   if getProjExt(K.AB_MASTER_MUTE_KEY) then AB.setMasterMuted(false) end
+  refreshTrackList()
   r.MarkProjectDirty(0)
   r.UpdateTimeline()
 end
@@ -2468,6 +2680,10 @@ end
 -- `prefix` defaults to the A/B naming. It has to be a parameter: the cover cache
 -- uses the same counting but a different prefix, and a hard-coded one would have
 -- reported an always-empty folder -- exactly the misleading row v1.18.5 fixed.
+-- Reaper writes a .reapeaks sidecar beside the reference audio. It belongs to
+-- the file and is deleted with it, so its bytes count -- but it is not a second
+-- reference, so it must not raise the file count. Counting it would tell the
+-- user he has two A/B files cached when he has one.
 function AB.statsIn(dir, prefix)
   prefix = prefix or '^cueport_ab_'
   local count, bytes = 0, 0
@@ -2476,7 +2692,7 @@ function AB.statsIn(dir, prefix)
     local fn = r.EnumerateFiles(dir, i)
     if not fn then break end
     if fn:match(prefix) then
-      count = count + 1
+      if not fn:match('%.reapeaks$') then count = count + 1 end
       bytes = bytes + (fileSize(dir .. pathSep() .. fn) or 0)
     end
     i = i + 1
@@ -2571,11 +2787,883 @@ function AB.dropForVersion()
   state.ab.status = nil
 end
 
+-- ── Render settings: borrow, use, hand back ────────────────────────────────
+--
+-- The whole reason this table exists is one sentence from the user: the script
+-- must not rummage around in the native render dialog. It has to, briefly --
+-- a render runs "using the most recent render settings", so what we do not set
+-- comes from whatever was rendered last, and that may well have been a mono
+-- bounce for the bassist. So: write down all 21 fields, set ours, render, put
+-- every one of them back byte for byte.
+--
+-- That the write-back really is byte-exact is not an assumption:
+-- test/reaper-probe-render.lua measured it on the user's machine, including
+-- the format blob. Without that result this whole feature would be dead.
+local Rnd = {}
+
+K.RND_PREFIX    = 'cueport_render_'
+K.RND_NOTE_NAME = 'cueport_render_restore.txt'
+-- FLAC 24 bit, level 5 -- the same file the studio portal produces, measured
+-- from this four-byte cookie on the probe run. NEVER compare RENDER_FORMAT
+-- against this string: it reads back expanded, not as the cookie.
+K.RND_FORMAT    = 'calf'
+K.ACTION_RENDER_LAST = 41824   -- File: Render project, using the most recent settings
+
+-- Source selection inside RENDER_SETTINGS. Measured, not read off the docs:
+-- four probe runs on the user's machine gave 0 for master mix, 3 (bits 0+1)
+-- for stems, 128 (bit 7) for selected tracks through the master. Every other
+-- bit in that field is something we did not identify and therefore leave
+-- exactly as we found it.
+K.RND_SRC_MASK    = 131
+K.RND_SRC_MASTER  = 0
+K.RND_SRC_STEMS   = 3
+K.RND_SRC_VIAMSTR = 128
+-- Bounds, from the same runs.
+K.RND_BOUNDS_PROJECT = 1
+K.RND_BOUNDS_TIMESEL = 2
+
+K.RND_STR_FIELDS = { 'RENDER_FILE', 'RENDER_PATTERN', 'RENDER_FORMAT', 'RENDER_FORMAT2' }
+K.RND_NUM_FIELDS = {
+  'RENDER_SETTINGS', 'RENDER_BOUNDSFLAG', 'RENDER_CHANNELS', 'RENDER_SRATE',
+  'RENDER_STARTPOS', 'RENDER_ENDPOS', 'RENDER_TAILFLAG', 'RENDER_TAILMS',
+  'RENDER_ADDTOPROJ', 'RENDER_DITHER', 'RENDER_NORMALIZE', 'RENDER_NORMALIZE_TARGET',
+  'RENDER_BRICKWALL', 'RENDER_FADEIN', 'RENDER_FADEOUT',
+  'RENDER_FADEINSHAPE', 'RENDER_FADEOUTSHAPE',
+}
+
+function Rnd.getNum(key)
+  local ok, v = pcall(r.GetSetProjectInfo, 0, key, 0, false)
+  if not ok then return nil end
+  return v
+end
+
+function Rnd.setNum(key, v)
+  pcall(r.GetSetProjectInfo, 0, key, v, true)
+end
+
+function Rnd.getStr(key)
+  local ok, _, v = pcall(r.GetSetProjectInfo_String, 0, key, '', false)
+  if not ok then return nil end
+  return v
+end
+
+function Rnd.setStr(key, v)
+  pcall(r.GetSetProjectInfo_String, 0, key, v or '', true)
+end
+
+-- Everything we are about to touch, plus everything next to it. The list is
+-- the one a Reaper render preset covers; a field left out here is a field that
+-- silently keeps our value afterwards.
+function Rnd.snapshot()
+  local snap = { str = {}, num = {} }
+  for _, k in ipairs(K.RND_STR_FIELDS) do snap.str[k] = Rnd.getStr(k) end
+  for _, k in ipairs(K.RND_NUM_FIELDS) do snap.num[k] = Rnd.getNum(k) end
+  return snap
+end
+
+-- Strings first: RENDER_FORMAT decides which of the numeric fields Reaper even
+-- considers meaningful, so putting the numbers back before the format can have
+-- them land in the wrong interpretation.
+function Rnd.restore(snap)
+  if type(snap) ~= 'table' then return false end
+  for _, k in ipairs(K.RND_STR_FIELDS) do
+    if snap.str and snap.str[k] ~= nil then Rnd.setStr(k, snap.str[k]) end
+  end
+  for _, k in ipairs(K.RND_NUM_FIELDS) do
+    if snap.num and snap.num[k] ~= nil then Rnd.setNum(k, snap.num[k]) end
+  end
+  return true
+end
+
+-- ── the note that survives a crash ─────────────────────────────────────────
+--
+-- A blocking render can take minutes on a long project, and if Reaper dies in
+-- the middle the restore below never runs -- the producer is then left with our
+-- output folder and our format sitting in his render dialog. Same shape as the
+-- repo repair note of v1.30.0: written BEFORE the first write, worked off by
+-- the next start.
+--
+-- A file, not ExtState: persisted ExtState is flushed when Reaper exits, and
+-- an exit is exactly what did not happen here.
+--
+-- Only for a SAVED project, and keyed by its path. An unsaved project has
+-- nothing on disk that could carry our settings forward, so there is nothing to
+-- repair -- and a note without a path would have to guess which project it
+-- belongs to, which is worse than not writing one.
+function Rnd.projectPath()
+  local _, fn = r.EnumProjects(-1, '')
+  return fn or ''
+end
+
+function Rnd.notePath()
+  return AB.globalCacheDir() .. pathSep() .. K.RND_NOTE_NAME
+end
+
+-- Lossless and one line per field: the format blob is arbitrary bytes and may
+-- well contain a newline, so anything that splits on lines has to escape first.
+local function rndEsc(s)
+  return (tostring(s):gsub('[^%w%._%-]', function(c) return ('%%%02X'):format(c:byte()) end))
+end
+
+local function rndUnesc(s)
+  return (s:gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end))
+end
+
+function Rnd.writeNote(snap)
+  local proj = Rnd.projectPath()
+  if proj == '' then return false end
+  -- The cache folder may not exist yet: the note can be the very first thing
+  -- this script ever writes there, and io.open does not make directories.
+  r.RecursiveCreateDirectory(AB.globalCacheDir(), 0)
+  local out = { 'project ' .. rndEsc(proj) }
+  for _, k in ipairs(K.RND_STR_FIELDS) do
+    if snap.str[k] ~= nil then out[#out+1] = 's ' .. k .. ' ' .. rndEsc(snap.str[k]) end
+  end
+  for _, k in ipairs(K.RND_NUM_FIELDS) do
+    if snap.num[k] ~= nil then out[#out+1] = 'n ' .. k .. ' ' .. rndEsc(snap.num[k]) end
+  end
+  return writeFile(Rnd.notePath(), table.concat(out, '\n') .. '\n')
+end
+
+function Rnd.readNote()
+  local body = readFile(Rnd.notePath())
+  if not body or body == '' then return nil end
+  local snap, proj = { str = {}, num = {} }, nil
+  for line in body:gmatch('[^\n]+') do
+    local kind, key, val = line:match('^(%S+)%s+(%S+)%s*(.*)$')
+    if kind == 'project' then proj = rndUnesc(key)
+    elseif kind == 's' and key then snap.str[key] = rndUnesc(val)
+    elseif kind == 'n' and key then snap.num[key] = tonumber(rndUnesc(val)) end
+  end
+  if not proj then return nil end
+  return snap, proj
+end
+
+function Rnd.clearNote() deleteFile(Rnd.notePath()) end
+
+-- Run at start. Restores only into the project the note names -- putting one
+-- project's render settings into another would be a second bug, not a repair.
+function Rnd.repairIfNeeded()
+  local snap, proj = Rnd.readNote()
+  if not snap then return false end
+  if proj ~= Rnd.projectPath() or proj == '' then return false end
+  r.Undo_BeginBlock()
+  Rnd.restore(snap)
+  r.Undo_EndBlock('CuePort: Restore render settings', -1)
+  Rnd.clearNote()
+  return true
+end
+
+-- ── the profile ────────────────────────────────────────────────────────────
+--
+-- Deliberately short. Format, bit depth, sample rate and channel count are not
+-- the user's to choose here: the file has to arrive the way CuePort wants it,
+-- and that is decided in the portal, not in our judgement. What he does choose
+-- is bounds and source, and those two are all this touches beyond the target
+-- path.
+function Rnd.apply(opts)
+  opts = opts or {}
+  Rnd.setStr('RENDER_FORMAT', K.RND_FORMAT)
+  Rnd.setNum('RENDER_CHANNELS', 2)     -- the mono trap that started all of this
+  Rnd.setNum('RENDER_SRATE', 0)        -- project rate; the portal does not resample either
+  Rnd.setNum('RENDER_NORMALIZE', 0)
+  Rnd.setNum('RENDER_BRICKWALL', 0)
+  Rnd.setNum('RENDER_DITHER', 0)
+  Rnd.setNum('RENDER_TAILFLAG', 0)
+  Rnd.setNum('RENDER_FADEIN', 0)
+  Rnd.setNum('RENDER_FADEOUT', 0)
+  Rnd.setNum('RENDER_ADDTOPROJ', 0)    -- an upload must not leave an item behind
+
+  Rnd.setNum('RENDER_BOUNDSFLAG',
+             opts.bounds == 'timesel' and K.RND_BOUNDS_TIMESEL or K.RND_BOUNDS_PROJECT)
+
+  -- Mask, do not overwrite: everything in RENDER_SETTINGS other than the three
+  -- source bits is something we did not identify on the probe runs, and a field
+  -- assigned outright would take those unknowns with it.
+  local cur = Rnd.getNum('RENDER_SETTINGS') or 0
+  local src = K.RND_SRC_MASTER
+  if opts.source == 'stems' then src = K.RND_SRC_STEMS
+  elseif opts.source == 'viamaster' then src = K.RND_SRC_VIAMSTR end
+  Rnd.setNum('RENDER_SETTINGS', (math.floor(cur) & ~K.RND_SRC_MASK) | src)
+
+  if opts.dir then Rnd.setStr('RENDER_FILE', opts.dir) end
+  if opts.pattern then Rnd.setStr('RENDER_PATTERN', opts.pattern) end
+end
+
+-- Where a render of ours goes. Its own prefix, and not by accident:
+-- AB.deleteAudioFile only ever removes '^cueport_ab_', so a bounce the producer
+-- wanted to keep is not swept away with the reference audio.
+function Rnd.outDir() return AB.storeDir() end
+
+function Rnd.outName(versionKey)
+  -- Not `versionKey or state.boundProductionId`: an empty string is TRUE in Lua,
+  -- so that would take the empty one and fall straight through to 'render',
+  -- putting two different productions' renders under the same name. Same trap
+  -- as `x or default` with a numeric zero.
+  local key = versionKey
+  if key == nil or key == '' then key = state.boundProductionId end
+  if key == nil or key == '' then key = 'render' end
+  key = tostring(key):gsub('[^%w%-_]', '')
+  if key == '' then key = 'render' end
+  return K.RND_PREFIX .. key
+end
+
+-- ── looking at the file, not at the settings ───────────────────────────────
+--
+-- Deliberately the result and not the dialog: a mono plugin at the end of the
+-- master chain produces a mono file without RENDER_CHANNELS ever saying so, and
+-- that is the failure the producer would only hear about from the artist.
+K.RND_AUDIO_EXT = { flac = true, wav = true, mp3 = true, aiff = true,
+                    aif = true, m4a = true, ogg = true }
+
+function Rnd.inspect(path)
+  local info = { path = path, bytes = fileSize(path) or 0 }
+  info.name = baseNameOf(path)
+  info.ext  = (path:match('%.([%w]+)%s*$') or ''):lower()
+  local ok, src = pcall(r.PCM_Source_CreateFromFile, path)
+  if ok and src then
+    local okL, len = pcall(r.GetMediaSourceLength, src)
+    if okL then info.length = tonumber(len) or 0 end
+    local okC, ch = pcall(r.GetMediaSourceNumChannels, src)
+    if okC then info.channels = tonumber(ch) or 0 end
+    local okS, sr = pcall(r.GetMediaSourceSampleRate, src)
+    if okS then info.srate = tonumber(sr) or 0 end
+    pcall(r.PCM_Source_Destroy, src)
+  end
+  return info
+end
+
+-- Hard stops and soft ones, kept apart on purpose. A hard stop means we do not
+-- know what we would be uploading; a warning means we do, and it is the
+-- producer's call. Turning a warning into a stop would make him fight the
+-- script; turning a stop into a warning would let a stem end up on the artist's
+-- production labelled as the mix.
+function Rnd.check(info, expectSec)
+  local errs, warns = {}, {}
+  if not info or (info.bytes or 0) <= 0 then
+    errs[#errs+1] = 'no file was written'
+    return errs, warns
+  end
+  if not K.RND_AUDIO_EXT[info.ext or ''] then
+    errs[#errs+1] = 'not an audio file (.' .. tostring(info.ext) .. ')'
+  end
+  if info.channels == 1 then
+    warns[#warns+1] = 'the file is mono'
+  end
+  if expectSec and expectSec > 0 and (info.length or 0) > 0 then
+    -- Generous: a tail, a fade or a rounding difference is normal. What this
+    -- is looking for is the order-of-magnitude miss -- eight seconds where
+    -- three minutes were meant, which is what a forgotten time selection
+    -- produces.
+    local off = math.abs(info.length - expectSec)
+    if off > math.max(2.0, expectSec * 0.05) then
+      warns[#warns+1] = ('length is %s, expected about %s')
+        :format(formatTimestamp(info.length), formatTimestamp(expectSec))
+    end
+  end
+  return errs, warns
+end
+
+-- Is this file this render's? Deliberately not a prefix test: the key is a
+-- production id filed down to [%w%-_], so the pattern for `prod-1` is a prefix
+-- of the one for `prod-11` -- and a prefix test would sweep away a bounce
+-- belonging to a different production. Only `<pattern>.<ext>` counts, plus the
+-- `<pattern>-2.<ext>` form Reaper uses when it refuses to overwrite.
+function Rnd.isOurs(fn, pattern)
+  if fn:sub(1, #pattern) ~= pattern then return false end
+  local rest = fn:sub(#pattern + 1)
+  return rest:match('^%.%w+$') ~= nil or rest:match('^%-%d+%.%w+$') ~= nil
+end
+
+-- Everything of ours already lying at the target. Reaper does not overwrite
+-- silently -- it puts a number after the name -- so a leftover from last time
+-- would make "exactly one file" false and hand back the wrong path.
+function Rnd.clearTargets(dir, pattern)
+  local i, names = 0, {}
+  while true do
+    local fn = r.EnumerateFiles(dir, i)
+    if not fn then break end
+    -- The peak cache goes too, or Reaper reads yesterday's peaks for today's
+    -- file.
+    if Rnd.isOurs(fn, pattern) or Rnd.isOurs((fn:gsub('%.reapeaks$', '')), pattern) then
+      names[#names+1] = fn
+    end
+    i = i + 1
+  end
+  for _, fn in ipairs(names) do deleteFile(dir .. pathSep() .. fn) end
+  return #names
+end
+
+function Rnd.producedFiles(dir, pattern)
+  local i, out = 0, {}
+  while true do
+    local fn = r.EnumerateFiles(dir, i)
+    if not fn then break end
+    if Rnd.isOurs(fn, pattern) then out[#out+1] = dir .. pathSep() .. fn end
+    i = i + 1
+  end
+  table.sort(out)
+  return out
+end
+
+-- The whole trip. Returns ok, info-or-message, warnings.
+--
+-- The shape here is the one the probe run insisted on: the restore runs OUTSIDE
+-- the pcall, so a throw in the middle still gives the producer his dialog back,
+-- and the verdict is read off the files afterwards rather than claimed.
+function Rnd.run(opts)
+  opts = opts or {}
+  local dir     = opts.dir or Rnd.outDir()
+  local pattern = opts.pattern or Rnd.outName(opts.versionKey)
+
+  r.RecursiveCreateDirectory(dir, 0)
+  Rnd.clearTargets(dir, pattern)
+
+  local snap = Rnd.snapshot()
+  Rnd.writeNote(snap)
+
+  local okRun = pcall(function()
+    Rnd.apply({ bounds = opts.bounds, source = opts.source, dir = dir, pattern = pattern })
+    r.Main_OnCommand(K.ACTION_RENDER_LAST, 0)
+  end)
+
+  Rnd.restore(snap)
+  Rnd.clearNote()
+
+  local files = Rnd.producedFiles(dir, pattern)
+  if not okRun then return false, 'the render did not run' end
+  if #files == 0 then
+    -- The honest reading, and the one that comes up in practice: bounds set to
+    -- a time selection that is not there.
+    return false, 'the render wrote no file'
+  end
+  if #files > 1 then
+    return false, ('the render wrote %d files -- stems or regions, not one mix'):format(#files)
+  end
+
+  local info = Rnd.inspect(files[1])
+  local errs, warns = Rnd.check(info, opts.expectSec)
+  if #errs > 0 then return false, errs[1], warns end
+  return true, info, warns
+end
+
+-- Has he actually selected something? Measured, not asked: a dialog that comes
+-- up every time gets clicked away, and the answer is already knowable.
+-- start == end is Reaper's way of saying "nothing selected", and a
+-- time-selection render would then write zero files.
+function Rnd.timeSelection()
+  local s, e = r.GetSet_LoopTimeRange(false, false, 0, 0, false)
+  s, e = tonumber(s) or 0, tonumber(e) or 0
+  if e - s <= 0 then return nil end
+  return s, e - s
+end
+
+-- ── the waveform that goes up with the file ────────────────────────────────
+--
+-- Without it the version arrives in CuePort with no waveform at all, and stays
+-- that way until somebody opens it in the portal or runs the admin backfill --
+-- so the artist gets a player with nothing drawn in it. Building the peaks here
+-- costs 0.017 s (measured, at the flat resolution this used to read); it reads
+-- 1024 times as many values now -- see K.RND_PEAKS_SUBS -- so that number is a
+-- floor, not the figure. The probe measured 282 ms for that read on a
+-- three-minute file.
+--
+-- It goes through the same ensurePeaks as the A/B reference, so Reaper writes
+-- its .reapeaks beside the rendered file. Rnd's own cleanup knows that name and
+-- takes the sidecar with the render.
+--
+-- The cost is honest and named on the About page: reading peaks out needs a
+-- take, and a take needs an item on a track. One track is inserted, read from,
+-- and removed again inside one undo block. There is no way to read peaks from a
+-- source that is not in the project.
+-- The upload page goes two columns from this much room per PAGE, so each column
+-- gets a little over 400 -- more than the 300 the whole page is held to in the
+-- narrow test, and that width is the one that has to work.
+K.UP_TWO_COL_MIN  = 820
+-- How far back below the threshold it has to fall before it stacks again.
+-- Wider than any scrollbar, which is the thing that would otherwise decide it.
+K.UP_TWO_COL_HYST = 24
+K.UP_COL_GAP      = 14
+
+-- How tall the strip over the file that is about to go up is drawn, and how far
+-- it will squeeze. Everything else on this page is a fixed number of lines, so
+-- the strip is the one thing that can give -- and it has to, or pulling the
+-- window down to its smallest leaves the last button half a line under the edge
+-- and the whole page scrolling for it.
+K.UP_WAVE_H   = 46
+K.UP_WAVE_MIN = 18
+-- What the loop draws under this page: one Dummy before the (empty) footer.
+K.UP_TAIL     = 10
+
+K.RND_PEAKS_N = 150   -- what the portal stores per version
+-- How many sub-buckets are read per stored value. Reading 150 straight out of
+-- the peaks API gives the MAXIMUM over ~1 second, and on a limited master that
+-- is the ceiling in every second the music plays -- a solid block with no
+-- structure in it. The portal stores the MEAN of |sample| over the same window,
+-- which still has the arrangement in it.
+--
+-- There is no mean in the peaks API -- the third block is spectral, not RMS --
+-- so it is read fine and averaged down. The finer the read, the closer the
+-- average gets to the mean, because the maximum over a shrinking window IS the
+-- sample once the window is one sample long. So the deviation from the portal's
+-- curve falls monotonically with the number of sub-buckets, and the only
+-- questions are how far it falls and what the reading costs.
+--
+-- Both have now been measured on a real file rather than simulated. Against the
+-- curve the portal computed for the same three-minute master, at 256:
+--
+--   correlation 0.956, mean deviation 0.058, worst 0.19, both peaking in the
+--   same 1/150th -- but the error is not spread evenly. In the loudest parts
+--   the two curves agree to within 1%; in the quiet opening the script reads a
+--   quarter low. That is the crest factor: the average of window maxima sits
+--   above the mean of the samples by a factor that depends on the material, and
+--   normalising divides by the factor at the LOUDEST point, so everywhere with
+--   a smaller factor comes out too low.
+--
+-- The cure is the same one, applied harder: a shorter window has a smaller
+-- crest factor, and at one sample it has none. The probe (test/reaper-probe-
+-- peaks.lua) measured what Reaper will actually hand out -- 1024 sub-buckets,
+-- 153,600 values for a three-minute file, in 282 ms, no truncation. So the
+-- ladder starts there. 282 ms is real but it is spent once, next to an upload
+-- that takes seconds.
+--
+-- A ladder, not one number: if the API hands back fewer values than were asked
+-- for, the next size down is tried before giving up. Falling straight from the
+-- top to a flat read would put the block back, which is worse than a coarser
+-- average.
+K.RND_PEAKS_SUBS = { 1024, 256, 64, 8 }
+
+-- ── the same arithmetic the portal does, on the same numbers ───────────────
+--
+-- Everything above reads Reaper's PEAKS, and peaks are maxima. The portal reads
+-- SAMPLES and takes the mean of their absolute value. No amount of reading
+-- maxima finely enough turns one into the other: the average of window maxima
+-- sits above the mean by a factor that depends on the material, normalising
+-- divides by that factor at the loudest point, and every quieter part comes out
+-- too low. Measured against the portal's own curve for a real master: the loud
+-- parts agreed to within 1%, the quiet opening read a quarter low.
+--
+-- So this does not approximate it. It runs the portal's function:
+--
+--     raw   = channel 0 of the decoded audio
+--     block = floor(#raw / 150)
+--     out_i = mean of |raw[j]| for the block
+--     normalised by the largest of them
+--
+-- Reaper hands out the decoded samples through an audio accessor, at the file's
+-- own sample rate, so both sides work from the same numbers. The remaining
+-- differences are two, and both are smaller than a rounding step: the browser
+-- decodes at its audio context's rate rather than the file's, and the sample
+-- count is worked out from the source length rather than counted.
+--
+-- It costs a pass over every sample of the file, which is far more work than
+-- reading peaks. That is the price of the two pictures being the same picture.
+-- If it cannot be done -- no accessor, a build without the API, a file that
+-- reads as silence -- Rnd.peaks falls back to the peak ladder below, and says
+-- so nowhere, because a coarse waveform is still better than none.
+K.RND_WAVE_CHUNK = 65536   -- samples per channel per accessor read
+K.RND_WAVE_SECS  = 60      -- hang guard, not a budget: nothing should near it
+
+function Rnd.samplePeaks(tk, len, n)
+  if not (r.APIExists and r.APIExists('GetAudioAccessorSamples')
+          and r.CreateTakeAudioAccessor) then return nil end
+  local rate = tonumber(state.rndWaveRate) or 0
+  local chans = tonumber(state.rndWaveChans) or 0
+  if rate <= 0 then return nil end
+  local nch = (chans >= 2) and 2 or 1
+  local total = math.floor(len * rate)
+  local blk   = math.floor(total / n)
+  if blk < 1 then return nil end
+
+  local acc = r.CreateTakeAudioAccessor(tk)
+  if not acc then return nil end
+  local t0 = 0
+  if r.GetAudioAccessorStartTime then
+    t0 = tonumber(r.GetAudioAccessorStartTime(acc)) or 0
+  end
+
+  local buf = r.new_array(K.RND_WAVE_CHUNK * nch)
+  local out, peak, deadline = {}, 0, r.time_precise() + K.RND_WAVE_SECS
+  local bad = false
+  for i = 1, n do
+    local sum, done = 0, 0
+    while done < blk do
+      if r.time_precise() > deadline then bad = true; break end
+      local want = blk - done
+      if want > K.RND_WAVE_CHUNK then want = K.RND_WAVE_CHUNK end
+      -- A silent stretch answers 0 and leaves the buffer zeroed, which is the
+      -- right answer for silence. Only a file that is silent from end to end is
+      -- suspicious, and that is caught by the peak check below.
+      local okS = pcall(r.GetAudioAccessorSamples, acc, rate, nch,
+                        t0 + ((i - 1) * blk + done) / rate, want, buf)
+      if not okS then bad = true; break end
+      for j = 0, want - 1 do
+        local v = tonumber(buf[j * nch + 1]) or 0
+        sum = sum + ((v < 0) and -v or v)
+      end
+      done = done + want
+    end
+    if bad then break end
+    out[i] = sum / blk
+    if out[i] > peak then peak = out[i] end
+  end
+  pcall(r.DestroyAudioAccessor, acc)
+  if bad or peak <= 0 then return nil end
+  for i = 1, n do out[i] = math.floor((out[i] / peak) * 1000 + 0.5) / 1000 end
+  return out
+end
+
+function Rnd.peaks(path, lengthSec, n)
+  n = n or K.RND_PEAKS_N
+  if not r.APIExists or not r.APIExists('GetMediaItemTake_Peaks') then return nil end
+  local len = tonumber(lengthSec) or 0
+  if len <= 0 then return nil end
+
+  local src = r.PCM_Source_CreateFromFile(path)
+  if not src then return nil end
+
+  -- Read off the source, not the take: the accessor needs both and the take is
+  -- built further down, inside the pcall.
+  state.rndWaveRate  = r.GetMediaSourceSampleRate and r.GetMediaSourceSampleRate(src) or 0
+  state.rndWaveChans = r.GetMediaSourceNumChannels and r.GetMediaSourceNumChannels(src) or 0
+
+  ensurePeaks(src, 10)
+
+  local out
+  r.PreventUIRefresh(1)
+  r.Undo_BeginBlock()
+  local idx = r.CountTracks(0)
+  r.InsertTrackAtIndex(idx, false)
+  local tr = r.GetTrack(0, idx)
+  local it
+  pcall(function()
+    if not tr then return end
+    it = r.AddMediaItemToTrack(tr)
+    local tk = it and r.AddTakeToMediaItem(it)
+    if not tk then return end
+    r.SetMediaItemTake_Source(tk, src)
+    r.SetMediaItemInfo_Value(it, 'D_LENGTH', len)
+
+    -- The one that matches the portal. Everything below it is the fallback.
+    out = Rnd.samplePeaks(tk, len, n)
+    if out then return end
+
+    -- One read at a given resolution. nil when the API hands back fewer values
+    -- than were asked for: those cover less time than the file, so spreading
+    -- them over the whole width would draw a waveform that is simply wrong.
+    -- The return value carries the count in its low 20 bits.
+    local function read(count)
+      local buf = r.new_array(count * 3)
+      if not pcall(function() buf.clear() end) then
+        for i = 1, count * 3 do buf[i] = 0 end
+      end
+      local got = r.GetMediaItemTake_Peaks(tk, count / len, 0, 1, count, 0, buf)
+      local spl = math.floor(math.abs(tonumber(got) or 0)) % 1048576
+      if spl < count then return nil end
+      -- The buffer is three blocks: maxima, minima, then extra. A waveform
+      -- wants how far the signal went either way, so both halves count.
+      local mags = {}
+      for i = 1, count do
+        local hi = math.abs(tonumber(buf[i]) or 0)
+        local lo = math.abs(tonumber(buf[count + i]) or 0)
+        mags[i] = (hi > lo) and hi or lo
+      end
+      return mags
+    end
+
+    local vals, peak
+    for _, sub in ipairs(K.RND_PEAKS_SUBS) do
+      local fine = read(n * sub)
+      if fine then
+        -- Averaged, not maxed: the maximum is what made the block in the first
+        -- place, and taking it again over the sub-buckets would only rebuild it.
+        vals = {}
+        for i = 1, n do
+          local acc = 0
+          for k = 1, sub do acc = acc + fine[(i - 1) * sub + k] end
+          vals[i] = acc / sub
+        end
+        break
+      end
+    end
+    if not vals then
+      -- Better a coarse waveform than none: this is the shape it had before,
+      -- and it is still a great deal more than the artist gets from a version
+      -- with no peaks at all.
+      vals = read(n)
+    end
+    if not vals then return end
+    peak = 0
+    for i = 1, n do
+      if vals[i] > peak then peak = vals[i] end
+    end
+    -- All zero means either silence or peaks that were never ready, and those
+    -- are not the same thing. Rather than send a flat line the artist would read
+    -- as "the file is empty", send nothing and let the portal fill it in.
+    if peak <= 0 then return end
+    for i = 1, n do vals[i] = math.floor((vals[i] / peak) * 1000 + 0.5) / 1000 end
+    out = vals
+  end)
+  -- Outside the pcall, exactly like the settings restore: a throw in the middle
+  -- must not leave a stray track sitting in his project.
+  if tr then
+    if it then pcall(r.DeleteTrackMediaItem, tr, it) end
+    pcall(r.DeleteTrack, tr)
+  end
+  r.Undo_EndBlock('CuePort: Read waveform', -1)
+  r.PreventUIRefresh(-1)
+  -- Same reason: a track was added and taken away again, and the list Reaper
+  -- draws is not the list it holds until it is told.
+  refreshTrackList()
+  pcall(r.PCM_Source_Destroy, src)
+  return out
+end
+
+-- ── Uploading a render ─────────────────────────────────────────────────────
+--
+-- Four calls at the other end: start, one PUT per part, complete, and abort for
+-- when it goes wrong. Driven one step per frame from the loop rather than in one
+-- go: a 60 MB file is a minute of curl, and a minute in which Reaper does not
+-- redraw is a minute in which the producer thinks it has hung.
+--
+-- Honest about what that does NOT fix: each individual part still blocks while
+-- curl runs, so the window stutters between steps. It stays answerable and it
+-- shows how far along it is, which one blocking call would not.
+local Up = {}
+
+K.UP_PART_SIZE = 8 * 1024 * 1024   -- what the server suggests; it may say otherwise
+K.UP_MAX_TIME  = 600               -- seconds for one part
+K.UP_CHUNK_TMP = 'upload.part'
+
+-- Where an upload goes. Reading and commenting always stay on production; this
+-- one route may differ, and only while production cannot serve it at all.
+--
+-- Not a setting: a switch has to be found, understood and turned back off, and
+-- one left on quietly sends a real render to a build nobody signed off. The
+-- worker states its capabilities instead, so this needs no maintenance at either
+-- end -- the day production lists `upload`, this returns the production host and
+-- the preview worker stops being contacted, with nothing to remove here.
+--
+-- The second return value says whether this IS the deviation, and the page that
+-- uses it has to say so: the preview worker shares production's database and
+-- bucket, so an upload sent there is a real version on the artist's production,
+-- not a test.
+function Up.base()
+  if state.apiFeatures and state.apiFeatures['upload'] then
+    return state.apiUrl, false
+  end
+  if K.API_URL_PREVIEW and K.API_URL_PREVIEW ~= state.apiUrl then
+    return K.API_URL_PREVIEW, true
+  end
+  return state.apiUrl, false
+end
+
+-- The server's word for what went wrong, not ours. It is the side that knows
+-- about plan limits, file types and ownership, and its message is what the
+-- status line shows.
+local function upFail(status, body)
+  local parsed = json.decode(body or '')
+  if parsed and parsed.error then return tostring(parsed.error) end
+  return 'HTTP ' .. tostring(status)
+end
+
+function Up.start(productionId, trackType, filename, size)
+  local status, body, err = httpPOST(Up.base() .. '/reaper/upload/start', authHeaders(), {
+    production_id = productionId, track_type = trackType,
+    filename = filename, size = size,
+  })
+  if not status then return nil, err end
+  if status ~= 200 then return nil, upFail(status, body) end
+  local parsed = json.decode(body or '')
+  if not parsed or not parsed.upload_id then return nil, 'Bad response' end
+  return parsed
+end
+
+function Up.part(uploadId, number, chunkPath)
+  local h = authHeaders()
+  h['X-Upload-Id']   = uploadId
+  h['X-Part-Number'] = tostring(number)
+  h['Content-Type']  = 'application/octet-stream'
+  local status, body, err = httpRequest('PUT', Up.base() .. '/reaper/upload/part', h, nil,
+                                        { bodyFile = chunkPath, maxTime = K.UP_MAX_TIME })
+  if not status then return nil, err end
+  if status ~= 200 then return nil, upFail(status, body) end
+  local parsed = json.decode(body or '')
+  if not parsed or not parsed.etag then return nil, 'Bad response' end
+  return parsed.etag
+end
+
+function Up.complete(uploadId, fields)
+  local payload = { upload_id = uploadId, parts = fields.parts }
+  payload.name     = fields.name
+  payload.label    = fields.label
+  payload.duration = fields.duration
+  payload.waveform = fields.waveform
+  payload.notify   = fields.notify
+  local status, body, err = httpRequest('POST', Up.base() .. '/reaper/upload/complete',
+    (function() local h = authHeaders(); h['Content-Type'] = 'application/json'; return h end)(),
+    json.encode(payload), { maxTime = 120 })
+  if not status then return nil, err end
+  if status ~= 200 then return nil, upFail(status, body) end
+  local parsed = json.decode(body or '')
+  if not parsed or not parsed.version then return nil, 'Bad response' end
+  return parsed
+end
+
+-- Best effort by design: this runs when something has already gone wrong, and a
+-- failure here must not replace the message that says what.
+function Up.abort(uploadId)
+  if not uploadId then return end
+  pcall(httpPOST, Up.base() .. '/reaper/upload/abort', authHeaders(), { upload_id = uploadId })
+end
+
+-- The name the artist sees in CuePort. Not the name on disk: that one is
+-- technical and unique on purpose, this one is read by a person and is also
+-- what a download is called.
+function Up.displayName(title, trackType, versionNumber, ext)
+  local kind = (trackType == 'instrumental') and 'Instrumental' or 'Mix Master'
+  local base = (title and title ~= '') and title or 'CuePort'
+  -- Not `%c`: that class is `iscntrl`, and under a Windows codepage locale that
+  -- covers 0x80-0x9F -- which are continuation bytes of perfectly ordinary UTF-8.
+  -- "Виновата ли я" went up as "? инова? а ли ?" because of it: every Cyrillic
+  -- letter whose second byte fell in that range had the byte replaced with a
+  -- space, breaking the character in half. The range is written out so it means
+  -- the same thing everywhere the script runs.
+  base = base:gsub('[\1-\31\127/\\"]', ' '):gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+  return ('%s (%s v%d).%s'):format(base, kind, versionNumber or 1, ext or 'flac')
+end
+
+-- ── the state machine ──────────────────────────────────────────────────────
+--
+-- One step per frame. `state.upload` is the whole of it, so a cancel is one
+-- assignment and there is no second place holding half a transfer.
+function Up.begin(job)
+  local size = fileSize(job.path) or 0
+  state.upload = {
+    phase = 'start', path = job.path, size = size,
+    productionId = job.productionId, trackType = job.trackType,
+    title = job.title, label = job.label, notify = job.notify,
+    duration = job.duration, waveform = job.waveform,
+    ext = (job.path:match('%.([%w]+)%s*$') or 'flac'):lower(),
+    parts = {}, sent = 0, partSize = K.UP_PART_SIZE,
+    keepRender = job.keepRender,
+  }
+  return state.upload
+end
+
+function Up.cancel()
+  local u = state.upload
+  if not u then return end
+  if u.uploadId then Up.abort(u.uploadId) end
+  state.upload = nil
+end
+
+-- The line the window shows while a transfer is running, in one place: the
+-- upload page prints it under its buttons and the veil prints it under its
+-- spinner, and two of them would drift.
+function Up.progressLine()
+  local u = state.upload
+  if not u then return nil end
+  local total = (u.size or 0) > 0 and math.max(1, math.ceil(u.size / (u.partSize or 1))) or 1
+  return ('Uploading %d%%  (part %d of %d)')
+    :format(math.floor(Up.progress() * 100 + 0.5), #(u.parts or {}), total)
+end
+
+function Up.progress()
+  local u = state.upload
+  if not u or (u.size or 0) <= 0 then return 0 end
+  return math.min(1, (u.sent or 0) / u.size)
+end
+
+-- Reads one part out of the file into a temp file curl can point at. Reading it
+-- into a Lua string first and writing it back out is deliberate and not a
+-- detour: curl has no way of sending a byte range of a file, and the whole file
+-- in one request would be refused at the edge long before the 2 GB the server
+-- allows.
+function Up.writeChunk(u)
+  local f = io.open(u.path, 'rb')
+  if not f then return nil, 'cannot read the render' end
+  f:seek('set', u.sent or 0)
+  local data = f:read(u.partSize or K.UP_PART_SIZE)
+  f:close()
+  if not data or #data == 0 then return nil, 'the render ended sooner than its size said' end
+  local chunkPath = tmpPath(K.UP_CHUNK_TMP)
+  if not writeFile(chunkPath, data) then return nil, 'cannot write the part' end
+  return chunkPath, #data
+end
+
+function Up.step()
+  local u = state.upload
+  if not u then return end
+
+  if u.phase == 'start' then
+    local res, err = Up.start(u.productionId, u.trackType,
+                              Up.displayName(u.title, u.trackType, 1, u.ext), u.size)
+    -- Which of the three steps stopped, not just why. "Stopped: no answer" is
+    -- the same sentence whether the upload never opened or died on its last
+    -- part, and those are not the same problem.
+    if not res then u.phase, u.error = 'error', 'opening the upload: ' .. tostring(err); return end
+    u.uploadId = res.upload_id
+    u.versionNumber = res.version_number or 1
+    if type(res.part_size) == 'number' and res.part_size > 0 then u.partSize = res.part_size end
+    u.phase = 'part'
+    return
+  end
+
+  if u.phase == 'part' then
+    local chunkPath, n = Up.writeChunk(u)
+    if not chunkPath then u.phase, u.error = 'error', n; Up.abort(u.uploadId); return end
+    local number = #u.parts + 1
+    local etag, err = Up.part(u.uploadId, number, chunkPath)
+    deleteFile(chunkPath)
+    if not etag then
+      local total = (u.size or 0) > 0 and math.max(1, math.ceil(u.size / (u.partSize or 1))) or 1
+      u.phase, u.error = 'error', ('part %d of %d: '):format(number, total) .. tostring(err)
+      Up.abort(u.uploadId); return
+    end
+    u.parts[#u.parts+1] = { part_number = number, etag = etag }
+    u.sent = (u.sent or 0) + n
+    if u.sent >= u.size then u.phase = 'complete' end
+    return
+  end
+
+  if u.phase == 'complete' then
+    local res, err = Up.complete(u.uploadId, {
+      parts = u.parts,
+      name  = Up.displayName(u.title, u.trackType, u.versionNumber, u.ext),
+      label = u.label,
+      duration = u.duration,
+      waveform = u.waveform,
+      notify = u.notify,
+    })
+    if not res then
+      u.phase, u.error = 'error', 'finishing the upload: ' .. tostring(err)
+      Up.abort(u.uploadId); return
+    end
+    u.version  = res.version
+    u.notified = res.notified
+    u.phase    = 'done'
+    -- The bounce is his, not ours: it sits in his project folder and the A/B
+    -- cleanup does not touch our prefix. Only remove it if he said to.
+    if u.keepRender == false then deleteFile(u.path) end
+    return
+  end
+end
+
+function Up.busy()
+  local u = state.upload
+  return u ~= nil and (u.phase == 'start' or u.phase == 'part' or u.phase == 'complete')
+end
+
 -- `trackType` is what the user pressed in the picker: the production plus which
 -- of its uploads to open. Without one the server picks as it always has (newest
 -- mixmaster), which is what clicking the row itself means.
 local function bindProduction(prod, trackType)
   AB.remove()  -- a previous production's reference must not linger
+  -- The upload choices belong to the production they were made for: which
+  -- kind, which file, which warnings. Carrying them across would offer to send
+  -- one production's bounce to another.
+  state.up, state.upload = nil, nil
   setProjExt('production_id', prod.id)
   state.boundProductionId = prod.id
   state.boundProduction = prod
@@ -2591,6 +3679,7 @@ local function bindProduction(prod, trackType)
   -- A version id belongs to one production; carrying it into another would ask
   -- the server for a version that is not in it (and get the fallback anyway).
   state.versions, state.versionsForId = nil, nil
+  state.versionsTriedFor = nil
   state.selectedVersionId, state.versionSwitchFrom = nil, nil
   setProjExt(K.VERSION_KEY, '')
   -- Asked for once, on the first sync of this binding: after that the version
@@ -2778,7 +3867,11 @@ local function doSync()
     setProjExt(K.VERSION_KEY, resp.version.id)
   end
   state.pendingTrackType = nil
-  saveWaveformCache(peaks, duration, state.versionFilename, state.versionId, state.metrics)
+  saveWaveformCache({
+    productionId = state.boundProductionId, peaks = peaks, duration = duration,
+    filename = state.versionFilename, versionId = state.versionId,
+    metrics = state.metrics, versions = state.versions,
+  })
   local v = resp.version
   local vLabel = v and (v.label or '?') or '?'
   local extra = ''
@@ -2929,6 +4022,9 @@ UI.loadFonts()
 local CP_COLORS = {
   accent       = 0xB088E0FF,  -- highlight purple (brand)
   accentStrong = 0x7B45C8FF,
+  -- The same purple at a third of its opacity, for a switch that is on but
+  -- cannot be pressed. Nothing else in the theme covers "on and disabled".
+  accentMuted  = 0x7B45C855,
   bg           = 0x18181CFF,  -- fully opaque dark surface
   border       = 0x3A3A3DFF,
   text         = 0xE8E8EAFF,
@@ -3542,18 +4638,72 @@ end
 
 -- Returns a token to hand back to UI.cardEnd. Content in between is indented
 -- and sits on the card surface.
-function UI.cardBegin(id)
+-- `h` forces the card's height. Without it the card grows to its contents,
+-- which is what almost every card wants; a card that shares a row with another
+-- one needs the row's height instead, and needs it as a real height rather than
+-- as padding poured into the contents -- padded, the two boxes still end up
+-- however ImGui chooses to round their auto height, and "almost the same" is
+-- what a grid is for avoiding.
+function UI.cardBegin(id, h)
   if not HAS_CARDS then return false end
+  h = tonumber(h) or 0
   ImGui.PushStyleColor(ctx, ImGui.Col_ChildBg(), CP_COLORS.card)
   ImGui.PushStyleColor(ctx, ImGui.Col_Border(),  CP_COLORS.cardBorder)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_ChildRounding(), 8)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding(), CARD_PAD_X, CARD_PAD_Y)
-  local f = ImGui.ChildFlags_AutoResizeY()
+  local f = 0
+  if h <= 0 then f = ImGui.ChildFlags_AutoResizeY() end
   if ImGui.ChildFlags_Borders          then f = f | ImGui.ChildFlags_Borders()
   elseif ImGui.ChildFlags_Border       then f = f | ImGui.ChildFlags_Border() end
-  if ImGui.ChildFlags_AlwaysAutoResize then f = f | ImGui.ChildFlags_AlwaysAutoResize() end
-  local open = ImGui.BeginChild(ctx, id, 0, 0, f)
+  if h <= 0 and ImGui.ChildFlags_AlwaysAutoResize then
+    f = f | ImGui.ChildFlags_AlwaysAutoResize()
+  end
+  local open = ImGui.BeginChild(ctx, id, 0, h, f)
   return { open = open }
+end
+
+-- A card in a grid of them.
+--
+-- Two columns of cards that each grow to their own contents line up at the top
+-- and nowhere else: the second heading on the left sits wherever the first card
+-- happened to end, and the one on the right somewhere else entirely. That reads
+-- as two lists side by side rather than as a page.
+--
+-- So each card reports the height its contents actually took, and the taller of
+-- a pair sets the height of the row. The shorter one is padded up to it -- with
+-- a Dummy, after the measurement, so the padding can never feed back into the
+-- number it is derived from. `rowKey` nil means "not in a row" (the stacked,
+-- narrow layout, and the full-width cards), and then nothing is padded.
+--
+-- One frame behind, like the About columns: the row height comes from the last
+-- frame. That is invisible while a page sits still and self-corrects on the
+-- next one, which is what these contents do.
+function UI.cardGrid(id, rowKey, body)
+  -- The height the row wants, from the frame before. Nothing is forced on the
+  -- first frame, so a card always gets one pass at its natural size.
+  local want = rowKey and (state.upRowH and state.upRowH[rowKey]) or 0
+  local card = UI.cardBegin(id, want)
+  local y0 = ImGui.GetCursorPosY(ctx)
+  body()
+  -- What the CONTENTS took, measured whether or not the box was forced -- the
+  -- contents do not change because the box around them is taller. That is what
+  -- keeps this from feeding back into itself.
+  local h = math.max(0, (ImGui.GetCursorPosY(ctx) or 0) - (y0 or 0))
+  state.upCardH = state.upCardH or {}
+  state.upCardH[id] = h
+  UI.cardEnd(card)
+  return h
+end
+
+-- After both cards of a row have been drawn: the taller one is the row.
+function UI.cardRow(rowKey, idA, idB)
+  local hs = state.upCardH or {}
+  local a, b = hs[idA] or 0, hs[idB] or 0
+  local tall = (a > b) and a or b
+  state.upRowH = state.upRowH or {}
+  -- Contents plus the card's own padding, top and bottom: that is the height of
+  -- the box, which is the thing that has to match.
+  state.upRowH[rowKey] = (tall > 0) and (tall + CARD_PAD_Y * 2) or 0
 end
 
 function UI.cardEnd(card)
@@ -3725,22 +4875,27 @@ end
 
 -- Switch. ImGui only offers a checkbox, so this is drawn by hand: a rounded
 -- track with a knob that sits on the side matching the state.
-function UI.toggle(id, value)
+-- `dim` because this switch is painted into the draw list, and BeginDisabled
+-- only greys out what ImGui draws itself. A row whose label had gone dim while
+-- its switch still glowed at full strength read as "off but somehow still on".
+function UI.toggle(id, value, dim)
   local w, h = 32, K.TOGGLE_H
   local x, y = ImGui.GetCursorScreenPos(ctx)
   local hit  = ImGui.InvisibleButton(ctx, id, w, h)
-  local hov  = ImGui.IsItemHovered(ctx)
+  local hov  = ImGui.IsItemHovered(ctx) and not dim
   local on   = value and true or false
-  if hit then on = not on end
+  if hit and not dim then on = not on end
   local dl   = ImGui.GetWindowDrawList(ctx)
-  local track = on and CP_COLORS.accentStrong or (hov and CP_COLORS.active or CP_COLORS.trackOff)
+  local track = on and (dim and CP_COLORS.accentMuted or CP_COLORS.accentStrong)
+                    or (hov and CP_COLORS.active or CP_COLORS.trackOff)
   ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, track, h / 2)
   if on and hov then
     ImGui.DrawList_AddRect(dl, x, y, x + w, y + h, CP_COLORS.accent, h / 2)
   end
   local kr = (h / 2) - 2
   local kx = on and (x + w - kr - 2) or (x + kr + 2)
-  ImGui.DrawList_AddCircleFilled(dl, kx, y + h / 2, kr, on and 0xFFFFFFFF or CP_COLORS.knob)
+  ImGui.DrawList_AddCircleFilled(dl, kx, y + h / 2, kr,
+    on and (dim and 0xFFFFFF80 or 0xFFFFFFFF) or CP_COLORS.knob)
   return hit, on
 end
 
@@ -3751,11 +4906,51 @@ end
 -- `disabled` is a set of indices that are shown but cannot be chosen -- a kind
 -- the production has no upload of. They are drawn, because "there is no
 -- instrumental yet" is worth seeing, and they never return a pick.
+-- How wide this control has to be for its own labels to fit. Measured, because
+-- a number that works on one machine is a guess on the next: the text metric
+-- depends on the font, its size and whatever Reaper's UI scale is set to, and
+-- none of that is knowable from here.
+K.SEG_PAD = 10
+
+-- Where a second button may sit on the sync row, and whether it fits at all.
+--
+-- `reserved` is the strip on the right that something else already occupies
+-- WITHOUT having reserved it: the cover paints itself into the corner straight
+-- into the draw list and never moves the cursor, so GetContentRegionAvail knows
+-- nothing about it. Right-aligning against the full width put the button on top
+-- of the artwork -- seen at the device on 2026-08-23, and the card's own
+-- comments had said as much two screens further up.
+function UI.pairOnRow(avail, tailW, reserved, btnW, minFirst)
+  local room = avail - (reserved or 0)
+  local firstW = room - (tailW or 0) - btnW - 12
+  if firstW < (minFirst or 90) then return false end
+  return true, math.max(0, room - btnW), firstW
+end
+
+function UI.segmentedMinW(labels)
+  local widest = 0
+  for _, l in ipairs(labels) do
+    local tw = ImGui.CalcTextSize(ctx, l)
+    if tw > widest then widest = tw end
+  end
+  return math.ceil((widest + K.SEG_PAD * 2) * #labels)
+end
+
 function UI.segmented(id, labels, activeIdx, totalW, disabled)
   disabled = disabled or {}
   local h      = 28
   local x, y   = ImGui.GetCursorScreenPos(ctx)
-  local w      = totalW or ImGui.GetContentRegionAvail(ctx)
+  local avail  = ImGui.GetContentRegionAvail(ctx)
+  -- The caller says how wide it would LIKE this to be. It does not get to make
+  -- it narrower than its own text: below that the centring pushes each label
+  -- out past its half, and the first one ends up drawn outside the card
+  -- entirely. Reported from a real Reaper on 2026-08-23, and invisible here
+  -- because the harness models 7 px per character.
+  local w = math.max(totalW or avail, UI.segmentedMinW(labels))
+  -- ...and never wider than the region it sits in, or the window becomes
+  -- draggable sideways. When both cannot be had, the clip below is what stops
+  -- the text escaping.
+  if avail and avail > 0 then w = math.min(w, avail) end
   local halfW  = w / #labels
   local picked = nil
   local dl     = ImGui.GetWindowDrawList(ctx)
@@ -3791,11 +4986,22 @@ function UI.segmented(id, labels, activeIdx, totalW, disabled)
     local tcol = CP_COLORS.textDim
     if i == activeIdx then tcol = 0xFFFFFFFF
     elseif disabled[i] then tcol = CP_COLORS.sectionText end
-    ImGui.DrawList_AddText(dl, sx + (halfW - tw) / 2, y + (h - th) / 2, tcol, label)
+    -- Clipped to its own half, always. The width above should make this
+    -- unnecessary; it is here because "should" is what the overflowing build
+    -- also thought, and a label that cannot fit is better cut off than drawn
+    -- across its neighbour.
+    local clipped = ImGui.DrawList_PushClipRect
+                    and pcall(ImGui.DrawList_PushClipRect, dl, sx, y, ex, y + h, true)
+    ImGui.DrawList_AddText(dl, sx + math.max(0, (halfW - tw) / 2), y + (h - th) / 2, tcol, label)
+    if clipped then ImGui.DrawList_PopClipRect(dl) end
   end
   ImGui.DrawList_AddRect(dl, x, y, x + w, y + h, CP_COLORS.cardBorder, 7)
   ImGui.SetCursorScreenPos(ctx, x, y + h)
-  return picked
+  -- The geometry rides along so a harness can ask where this control actually
+  -- ended up. Hunting for it among the frame's rectangles picks the wrong one
+  -- and the assertion then measures nothing -- which is exactly what the first
+  -- attempt at the overflow check did.
+  return picked, x, w, h
 end
 
 -- A pill: a rounded, clickable chip. Drawn rather than assembled from a Button
@@ -3852,6 +5058,52 @@ K.BADGE_SHRINK = 6
 -- Its own size, a shade under the small text elsewhere. Shortening the pill
 -- alone left the letters at full size, so it barely read as smaller.
 K.FONT_BADGE   = 10
+
+-- What the header pill says. It used to say CONNECTED, which answers "is there
+-- a token" -- a question nobody was asking. The studio name answers the one
+-- that matters before anything is uploaded: WHICH studio is this device paired
+-- to. A name that is not yours is meant to be noticed.
+--
+-- Recognition, not prevention: pairing is still approved in the browser, and
+-- this does not stop a device being paired to the wrong place. It makes it
+-- visible, which is the cheapest thing that helps.
+K.CONN_LABEL_MAX = 22
+
+function UI.connLabel()
+  -- The deviation wins the pill: which worker is being talked to is the more
+  -- surprising fact of the two, and it is temporary.
+  if state.apiUrl ~= K.API_URL then return 'PREVIEW' end
+  local name = state.studioName
+  if type(name) ~= 'string' then return 'CONNECTED' end
+  name = name:gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+  if name == '' then return 'CONNECTED' end
+  return UI.connTrim(name, K.CONN_LABEL_MAX)
+end
+
+-- Cut on a character, not on a byte. Studio names are not guaranteed to be
+-- ASCII -- half the productions in this account are Russian -- and a byte-wise
+-- cut through a two-byte letter puts a broken glyph in the header.
+function UI.connTrim(s, maxChars)
+  local n, i = 0, 1
+  while i <= #s do
+    local b = s:byte(i)
+    local size = (b < 0x80 and 1) or (b < 0xE0 and 2) or (b < 0xF0 and 3) or 4
+    if n + 1 > maxChars then
+      -- Room for the ellipsis inside the budget, so the label never grows past
+      -- what the header was measured for.
+      local cut, m, j = 1, 0, 1
+      while j <= #s and m < maxChars - 1 do
+        local bb = s:byte(j)
+        j = j + ((bb < 0x80 and 1) or (bb < 0xE0 and 2) or (bb < 0xF0 and 3) or 4)
+        m, cut = m + 1, j
+      end
+      return s:sub(1, cut - 1) .. '\u{2026}'
+    end
+    n = n + 1
+    i = i + size
+  end
+  return s
+end
 
 function UI.badgeWidth(label)
   ImGui.PushFont(ctx, FONT, K.FONT_BADGE)
@@ -3926,6 +5178,103 @@ function UI.linkRow(label, url, hint, id)
   UI.row(label, hint, w, function()
     if ImGui.Button(ctx, 'Open##' .. (id or url), w, 0) then openUrl(url) end
   end, nil, ImGui.GetFrameHeight and ImGui.GetFrameHeight(ctx) or nil)
+end
+
+-- One line of small text, clipped rather than wrapped, and exactly one line tall
+-- whatever it says. Wrapping is right for prose and wrong for a status line: a
+-- sentence that takes two lines on a narrow window and one on a wide one makes
+-- the block below it move as the window is dragged, and a line that appears and
+-- disappears makes it move on every click.
+--
+-- An empty string still takes its line. That is the whole point: the slot is
+-- there whether or not there is anything to put in it.
+function UI.oneLine(text, bright)
+  local lh = UI.lineH()
+  if not text or text == '' then ImGui.Dummy(ctx, 0, lh); return end
+  local x, y = ImGui.GetCursorScreenPos(ctx)
+  local w    = ImGui.GetContentRegionAvail(ctx)
+  local dl   = ImGui.GetWindowDrawList(ctx)
+  local clipped = ImGui.DrawList_PushClipRect
+                  and pcall(ImGui.DrawList_PushClipRect, dl, x, y, x + w, y + lh, true)
+  ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
+  ImGui.DrawList_AddText(dl, x, y, bright and CP_COLORS.text or CP_COLORS.textDim, text)
+  ImGui.PopFont(ctx)
+  if clipped then ImGui.DrawList_PopClipRect(dl) end
+  ImGui.Dummy(ctx, 0, lh)
+end
+
+-- A slot of exactly `n` lines. Height by construction, not by measurement:
+-- reading the cursor back and padding the difference would depend on the
+-- content having been measured, and there are frames where it has not been.
+function UI.slot(n, lines, bright)
+  for i = 1, n do UI.oneLine(lines and lines[i] or nil, bright) end
+end
+
+-- Break `text` over at most `n` lines that fit `maxW`. UI.oneLine clips on a
+-- hard edge -- which is right for a filename and wrong for a sentence: the
+-- warning about an empty time selection read "Nothing is selected in the
+-- timeline. This would" and then stopped, four pixels short of the word that
+-- says what happens. Greedy by word, measured rather than counted, because a
+-- character is not a width.
+function UI.wrapLines(text, maxW, n)
+  local out = {}
+  if not text or text == '' then return out end
+  local line = nil
+  for word in tostring(text):gmatch('%S+') do
+    local try = line and (line .. ' ' .. word) or word
+    if line and (ImGui.CalcTextSize(ctx, try) or 0) > maxW then
+      out[#out + 1] = line
+      if #out >= n then
+        -- No room left: the last line takes what is left of the text, cut.
+        out[#out] = UI.ellipsisEnd(line .. ' ' .. word, maxW)
+        return out
+      end
+      line = word
+    else
+      line = try
+    end
+  end
+  if line then out[#out + 1] = line end
+  return out
+end
+
+-- `n` lines, wrapped, and always exactly `n` tall -- the empty ones are Dummies
+-- like everywhere else on this page.
+function UI.slotWrap(n, text, bright)
+  local w = ImGui.GetContentRegionAvail(ctx)
+  local ls = UI.wrapLines(text, w, n)
+  UI.slot(n, ls, bright)
+end
+
+function UI.ellipsisEnd(text, maxW)
+  if (ImGui.CalcTextSize(ctx, text) or 0) <= maxW then return text end
+  local cut = text
+  while #cut > 1 do
+    cut = cut:sub(1, utf8.offset(cut, -1) - 1)
+    if (ImGui.CalcTextSize(ctx, cut .. '\u{2026}') or 0) <= maxW then break end
+  end
+  return cut .. '\u{2026}'
+end
+
+-- A path is cut in the MIDDLE, not at the end: the tail is the folder anybody
+-- is actually looking for, and "/Users/x/Library/Application Support/REAPER/ab"
+-- with the rest silently gone is worse than useless -- it reads like a complete
+-- path that happens to be wrong.
+function UI.ellipsisMid(text, maxW)
+  text = tostring(text or '')
+  if (ImGui.CalcTextSize(ctx, text) or 0) <= maxW then return text end
+  local n = utf8.len(text)
+  if not n or n < 4 then return text end
+  local keepTail = math.floor(n / 2)
+  local head = text:sub(1, utf8.offset(text, n - keepTail) - 1)
+  local tail = text:sub(utf8.offset(text, -keepTail))
+  -- Shrink both halves together until it fits.
+  while utf8.len(head) and utf8.len(head) > 1 and utf8.len(tail) and utf8.len(tail) > 1 do
+    if (ImGui.CalcTextSize(ctx, head .. '\u{2026}' .. tail) or 0) <= maxW then break end
+    head = head:sub(1, utf8.offset(head, -1) - 1)
+    tail = tail:sub(utf8.offset(tail, 2))
+  end
+  return head .. '\u{2026}' .. tail
 end
 
 -- Dimmed key on the left, value right-aligned. Used for the diagnostics block.
@@ -5314,7 +6663,7 @@ function UI.brand()
     -- The badge normally reads CONNECTED. On the preview worker it says so
     -- instead: this is the one label that is on screen at all times, and
     -- "which build am I talking to" belongs where it cannot be missed.
-    local badgeLabel = (state.apiUrl ~= K.API_URL) and 'PREVIEW' or 'CONNECTED'
+    local badgeLabel = UI.connLabel()
     local badgeW = state.token and UI.badgeWidth(badgeLabel) or 0
     local gap    = state.token and 10 or 0
     local winW   = ImGui.GetWindowWidth(ctx)
@@ -5723,7 +7072,8 @@ function UI.about()
     UI.para('This script is the Reaper end of it. It brings the comments for the ' ..
             'active version onto your ruler as project markers, draws the same ' ..
             'waveform inside Reaper, and plays the uploaded version against your ' ..
-            'DAW mix. It reads from CuePort and never uploads anything.', true)
+            'DAW mix. Apart from a render you choose to send back yourself, ' ..
+            'nothing leaves Reaper.', true)
     ImGui.Dummy(ctx, 0, 8)
     UI.linkRow('CuePort', 'https://cueport.app', 'The studio portal and everything else about it.', 'site')
   end)
@@ -5750,6 +7100,17 @@ function UI.about()
     UI.bullet('Render start marks where bar 1 of your project sits inside the ' ..
               'uploaded file, so a comment at 1:23 lands at 1:23 of the audio and ' ..
               'not 1:23 of your timeline.')
+    UI.bullet('Send a render back, without the browser. The Render page borrows ' ..
+              'Reaper\'s render settings for the one pass and puts all of them ' ..
+              'back afterwards, byte for byte, whether it worked or not. The ' ..
+              'finished file is shown to you first -- its length, its waveform, ' ..
+              'and anything that looks off, like a time selection you forgot ' ..
+              'about -- and nothing is sent until you press the button.')
+    UI.bullet('Every upload becomes a new version, exactly as it would from the ' ..
+              'studio portal. Nothing is overwritten and no comment is carried ' ..
+              'over or marked as answered. You decide per upload whether the ' ..
+              'artist gets an email about it; the portal never sends one, ' ..
+              'because there you are already looking at the screen.')
   end)
 
   panel('project', 'What it changes in your project', function()
@@ -5778,6 +7139,20 @@ function UI.about()
               'a cache of that version\'s comments and waveform, in the project\'s ' ..
               'own extension data. This marks the project modified.')
     UI.bullet('The edit cursor, when you click the waveform or a comment.')
+    UI.bullet('The track selection, for an instant, whenever the reference track ' ..
+              'is added or removed: Reaper\'s Track Manager only notices a new ' ..
+              'track when the selection changes. An unselected track is selected ' ..
+              'and unselected again, so what you had selected stays selected.')
+    UI.bullet('The render settings, while a render for CuePort is running. All ' ..
+              'twenty-one fields are written down first and put back straight ' ..
+              'afterwards, whether it worked or not. If REAPER should die in the ' ..
+              'middle, the next start puts them back -- into this project only.')
+    UI.bullet('One audio file named "' .. K.RND_PREFIX .. '..." beside your .rpp, ' ..
+              'for each render sent to CuePort. It stays unless you say otherwise; ' ..
+              'the A/B cleanup does not touch it.')
+    UI.bullet('One empty track, for a fraction of a second, to read the waveform ' ..
+              'off the finished render. There is no way to read peaks from a file ' ..
+              'that is not in the project. It is removed again in the same undo step.')
     UI.bullet('Its own file, when you press the update button -- and only then. ' ..
               'The new one is checked three ways before it is put in place and ' ..
               'the old one stays beside it as a .bak. If ReaPack manages this ' ..
@@ -5785,9 +7160,9 @@ function UI.about()
               'switches that one repository off and on again, which is what ' ..
               'makes ReaPack update it alone; the setting is put back afterwards.')
     ImGui.Dummy(ctx, 0, 7)
-    UI.para('Syncing markers, setting or clearing the render start and removing the ' ..
-            'A/B track are named undo steps. Inserting the A/B track is not -- ' ..
-            'use Remove rather than Undo for that one.')
+    UI.para('Syncing markers, setting or clearing the render start, reading the ' ..
+            'waveform and removing the A/B track are named undo steps. Inserting ' ..
+            'the A/B track is not -- use Remove rather than Undo for that one.')
   end)
 
   panel('privacy', 'What leaves this machine', function()
@@ -5805,12 +7180,17 @@ function UI.about()
               'file on GitHub to learn the current version number. No token, no ' ..
               'ids, nothing about you -- GitHub sees a request for a public file. ' ..
               'Switch it off in Settings and nothing is sent at all.')
+    UI.bullet('Uploads: the one rendered file, its length and its waveform, and ' ..
+              'only when you press the button. Nothing else from your project ' ..
+              'ever leaves.')
     UI.bullet('Everything else goes to CuePort and nowhere else. There is one ' ..
               'exception, and the badge above says PREVIEW while it applies: if ' ..
               'CuePort answers like a version older than this script, the rest ' ..
               'of the session goes to CuePort\'s preview worker instead -- same ' ..
               'company, same database, and it stops by itself once the release ' ..
-              'catches up.')
+              'catches up. The same applies to an upload while this CuePort has ' ..
+              'no upload path: it goes there, and what arrives is a real version ' ..
+              'on a real production.')
     ImGui.Dummy(ctx, 0, 6)
     UI.para('That is the whole of it. Nothing from your project -- no audio, no ' ..
             'track names, no project file -- is ever sent anywhere.', true)
@@ -5971,25 +7351,76 @@ end
 -- Is something running that the user has to wait for? A check is not one of
 -- those: it costs 200 bytes and nobody notices it. A download and a ReaPack run
 -- are, and while one is going the window would otherwise look like it stopped.
-function UI.busy()
+-- What the window is waiting on, or nil. One place, because three things have
+-- to agree about it: the veil, the BeginDisabled around the content underneath,
+-- and the Cancel on top of it. A veil over a page that is still pressable, or a
+-- Cancel that cancels the other job, is worse than no veil at all.
+function UI.busyJob()
   local st = state.upd
-  if not st then return false end
-  if st.rpStarted then return true end
-  return (st.job and st.job.kind == 'install') and true or false
+  if st then
+    if st.rpStarted then return { label = 'Waiting for ReaPack...', cancel = Upd.cancel } end
+    if st.job and st.job.kind == 'install' then
+      return { label = 'Downloading...', cancel = Upd.cancel }
+    end
+  end
+  -- A transfer of tens of megabytes is the longest thing this script does, and
+  -- until now it said so only in a small line under the buttons while the rest
+  -- of the page still looked pressable.
+  if Up.busy() then
+    return { label = Up.progressLine() or 'Uploading...', cancel = Up.cancel }
+  end
+  return nil
 end
 
--- Over everything, once the content is drawn: the window dims and a large arc
--- turns in the middle of it. The content underneath is wrapped in
--- BeginDisabled, so nothing can be pressed while this is up -- half a window
--- that reacts and half that does not is worse than one that plainly waits.
+function UI.busy()
+  return UI.busyJob() ~= nil
+end
+
+-- Over everything, once the content is drawn: the window dims and an arc turns
+-- in the middle of it. The content underneath is wrapped in BeginDisabled, so
+-- nothing can be pressed while this is up -- half a window that reacts and half
+-- that does not is worse than one that plainly waits.
+--
+-- On the FOREGROUND draw list, and this is the whole trick. The first version
+-- drew on the window's own list, and the upload page puts its two columns in
+-- child windows -- a child is composited AFTER its parent, so the veil, the
+-- plate and the label all landed UNDERNEATH the very cards they were meant to
+-- cover. On screen that read as a see-through plate with the render card's text
+-- running straight through the progress line.
+--
+-- For the same reason Cancel cannot be an ImGui button here: a widget belongs to
+-- the window that draws it, and that window is behind the children too. It is
+-- drawn on the same list and hit-tested against its rectangle, the way the
+-- menu's rows already are.
 function UI.busyOverlay()
   local x, y = ImGui.GetWindowPos(ctx)
   local w, h = ImGui.GetWindowSize(ctx)
   if not (w and h and w > 0 and h > 0) then return end
-  local dl = ImGui.GetWindowDrawList(ctx)
-  ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, 0x0A0A10C0, K.WINDOW_ROUND or 0)
-  local cx, cy = x + w / 2, y + h / 2
-  local rad = 26
+  local dl = (ImGui.GetForegroundDrawList and ImGui.GetForegroundDrawList(ctx))
+             or ImGui.GetWindowDrawList(ctx)
+  ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, 0x08080EF0, K.WINDOW_ROUND or 0)
+
+  local job = UI.busyJob() or {}
+  local label = job.label or 'Working...'
+  local tw = ImGui.CalcTextSize(ctx, label) or 0
+  local cx = x + w / 2
+  local rad = 24
+
+  -- The panel, sized from the label so a long progress line cannot run off it,
+  -- and placed as one block rather than around the middle of the window: the
+  -- three parts belong together and the eye should find them in one place.
+  local pw = tw + 64
+  if pw < 240 then pw = 240 end
+  local bw2, bh2 = 104, 28
+  local lh = UI.lineH() or 16
+  local ph = 20 + rad * 2 + 18 + lh + 16 + bh2 + 20
+  local px0, px1 = cx - pw / 2, cx + pw / 2
+  local py0 = y + h / 2 - ph / 2
+  local py1 = py0 + ph
+  ImGui.DrawList_AddRectFilled(dl, px0, py0, px1, py1, 0x14161EFF, 16)
+  ImGui.DrawList_AddRect(dl, px0, py0, px1, py1, 0x33344AFF, 16, 0, 1)
+
+  local cy = py0 + 20 + rad
   if ImGui.DrawList_PathArcTo and ImGui.DrawList_PathStroke then
     local t  = r.time_precise() * 3
     local a0 = t % (math.pi * 2)
@@ -6002,16 +7433,24 @@ function UI.busyOverlay()
   else
     ImGui.DrawList_AddCircle(dl, cx, cy, rad, CP_COLORS.accent, 0, 4)
   end
-  local st = state.upd or {}
-  local label = st.rpStarted and 'Waiting for ReaPack...' or 'Downloading...'
-  local tw = ImGui.CalcTextSize(ctx, label)
-  ImGui.DrawList_AddText(dl, cx - tw / 2, cy + rad + 14, CP_COLORS.text or 0xFFFFFFFF, label)
+
+  local ty = cy + rad + 18
+  ImGui.DrawList_AddText(dl, cx - tw / 2, ty, CP_COLORS.text or 0xFFFFFFFF, label)
 
   -- A wait with no way out is a trap, and this one locks everything behind it.
-  -- The button sits outside the disabled region, so it stays pressable.
-  local bw2, bh2 = 90, 24
-  ImGui.SetCursorScreenPos(ctx, cx - bw2 / 2, cy + rad + 38)
-  if ImGui.Button(ctx, 'Cancel##upd_cancel', bw2, bh2) then Upd.cancel() end
+  local bx0 = cx - bw2 / 2
+  local by0 = ty + lh + 16
+  local hot = ImGui.IsMouseHoveringRect
+              and ImGui.IsMouseHoveringRect(ctx, bx0, by0, bx0 + bw2, by0 + bh2) or false
+  ImGui.DrawList_AddRectFilled(dl, bx0, by0, bx0 + bw2, by0 + bh2,
+                               hot and 0x2B2E3EFF or 0x1E2130FF, 8)
+  ImGui.DrawList_AddRect(dl, bx0, by0, bx0 + bw2, by0 + bh2, 0x44475EFF, 8, 0, 1)
+  local cw = ImGui.CalcTextSize(ctx, 'Cancel') or 0
+  ImGui.DrawList_AddText(dl, bx0 + (bw2 - cw) / 2, by0 + (bh2 - lh) / 2,
+                         CP_COLORS.text or 0xFFFFFFFF, 'Cancel')
+  if hot and ImGui.IsMouseClicked and ImGui.IsMouseClicked(ctx, 0) and job.cancel then
+    job.cancel()
+  end
 end
 
 -- Something is happening and it is not instant: a download, or ReaPack going
@@ -6584,12 +8023,49 @@ end
 -- The list only counts while it belongs to the production on screen. After a
 -- binding change the old list is still in memory for a frame or two, and
 -- offering it would let a click ask for a version of a different production.
+-- Lazy-load the persisted version list, the same way the waveform block picks
+-- up its peaks. Hung off the one function that reads the list, so every caller
+-- gets it -- the switcher, the pills and the upload page all ask through here.
+-- Tried once per binding: a production with no cached list must not re-read the
+-- project file on every frame.
+function UI.ensureVersions()
+  local pid = state.boundProductionId
+  if not pid or state.versionsForId == pid or state.versionsTriedFor == pid then return end
+  state.versionsTriedFor = pid
+  local cached = loadWaveformCache(pid)
+  if cached and type(cached.versions) == 'table' and #cached.versions > 0 then
+    state.versions     = cached.versions
+    state.versionsForId = pid
+  end
+end
+
 function UI.versionsFor()
+  UI.ensureVersions()
   if not state.boundProductionId then return nil end
   if state.versionsForId ~= state.boundProductionId then return nil end
   local list = state.versions
   if type(list) ~= 'table' or #list == 0 then return nil end
   return list
+end
+
+-- Fold a version the server just told us about into the list we hold. Only
+-- ever adds -- an id that is already in there is left alone, so a repeated
+-- frame cannot duplicate it.
+function UI.rememberVersion(v)
+  if type(v) ~= 'table' or not v.id or not state.boundProductionId then return end
+  if state.versionsForId ~= state.boundProductionId then
+    -- No list for this production yet: start one, otherwise UI.versionsFor
+    -- refuses it as belonging to something else.
+    state.versions, state.versionsForId = {}, state.boundProductionId
+  end
+  state.versions = state.versions or {}
+  for _, e in ipairs(state.versions) do
+    if e.id == v.id then return end
+  end
+  state.versions[#state.versions + 1] = {
+    id = v.id, track_type = v.track_type, version_number = v.version_number,
+    label = v.label, filename = v.name or v.filename, created_at = v.created_at,
+  }
 end
 
 function UI.activeVersion()
@@ -6714,9 +8190,16 @@ end
 -- Nothing at all before the first sync: the list is what the server sends with
 -- the comments, and inventing a "Version 1" for a production nobody has opened
 -- yet would be a label with no answer behind it.
-function UI.versionRow()
+-- `trailing` is a control that belongs on the same line as the kind switcher,
+-- pushed against the right edge. That line is the first one BELOW the cover --
+-- the card has already moved the cursor past its bottom edge -- so the full
+-- width is free here, unlike on the sync row further up.
+--
+-- Returns whether it was placed: on a narrow card there is no room beside the
+-- switcher, and the caller then has to put it somewhere of its own.
+function UI.versionRow(trailing, trailingW)
   local list = UI.versionsFor()
-  if not list then return end
+  if not list then return false end
   local cur = UI.activeVersion()
   local types, have = UI.versionTypes(list)
   -- What is open. Never a kind the production does not have: the fallback is
@@ -6741,10 +8224,22 @@ function UI.versionRow()
     if not have[tt] then off[i] = true end
   end
   local availT = ImGui.GetContentRegionAvail(ctx)
-  local pick = UI.segmented('##cpvtype', labels, activeIdx,
-                            math.max(120, math.min(320, availT)), off)
+  local rowX0  = ImGui.GetCursorPosX(ctx)
+  -- The switcher keeps what it needs; the trailing control gets the rest, and
+  -- only if what is left over is still enough for the switcher to read as one.
+  local paired, trailX = false, nil
+  if trailing and trailingW then
+    paired, trailX = UI.pairOnRow(availT, 0, 0, trailingW, 160)
+  end
+  local segW = paired and math.min(360, math.max(160, trailX - 12)) or math.min(360, availT)
+  local pick = UI.segmented('##cpvtype', labels, activeIdx, segW, off)
   if pick and types[pick] and types[pick] ~= curType then
     UI.switchVersion(UI.newestOfType(list, types[pick]))
+  end
+  if paired then
+    ImGui.SameLine(ctx)
+    ImGui.SetCursorPosX(ctx, rowX0 + trailX)
+    trailing()
   end
   ImGui.Dummy(ctx, 0, 7)
 
@@ -6794,6 +8289,7 @@ function UI.versionRow()
   end
   ImGui.Dummy(ctx, 0, 6)
   if pickV then UI.switchVersion(pickV) end
+  return paired
 end
 
 -- Lazy-load the persisted waveform for the current binding if we don't yet
@@ -6802,7 +8298,7 @@ end
 function UI.ensureWaveform()
   if not state.boundProductionId then return end
   if state.waveform and state.waveformForId == state.boundProductionId then return end
-  local cached = loadWaveformCache()
+  local cached = loadWaveformCache(state.boundProductionId)
   if cached then
     state.waveform = { peaks = cached.peaks or {}, duration = cached.duration }
     if type(cached.metrics) == 'table' then state.metrics = cached.metrics end
@@ -7223,6 +8719,9 @@ function UI.bound()
       local syncAvail = ImGui.GetContentRegionAvail(ctx)
       local syncTail  = state.lastSyncAt
         and (10 + ImGui.CalcTextSize(ctx, UI.relTime(state.lastSyncAt))) or 0
+      -- The upload button shares this line when there is room for it. The card
+      -- had a whole row of its own for it with the cover sitting above an empty
+      -- half -- one row spent on one button, and the space beside it wasted.
       if UI.primaryButton('Sync comments##dosync',
                           math.max(90, math.min(200, syncAvail - syncTail))) then doSync() end
       if state.lastSyncAt then
@@ -7241,6 +8740,15 @@ function UI.bound()
       if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
       ImGui.PopFont(ctx)
     end
+    -- The way to a new version, from the place the producer is already in when
+    -- he has finished working the feedback off. One entry, not two: both ways
+    -- of getting a file up there answer the same three questions, and a second
+    -- door would be a second place to ask them.
+    --
+    -- A line of its own only when it did not fit beside Sync. Two buttons that
+    -- insist on a width are how a narrow docker starts scrolling sideways, so
+    -- the pairing above is measured rather than assumed.
+
     -- The cover paints into the corner without moving the cursor, so nothing
     -- reserves its height. Since it is taller than the artist + title + button
     -- column beside it, the hairline below would otherwise cut straight through
@@ -7260,7 +8768,28 @@ function UI.bound()
     -- Above the rule, with the title and the sync button: which version is open
     -- is a fact about the production, and the rule separates that from the
     -- player below it.
-    UI.versionRow()
+    -- The way to a new version, beside the kind switcher. That line is the
+    -- first one below the cover -- the cursor has already been pushed past its
+    -- bottom edge above -- so the right-hand half of the card is genuinely
+    -- free there, which it is not on the sync row further up.
+    local upW = ImGui.CalcTextSize(ctx, K.UPLOAD_BTN) + 30
+    state.uploadBtnPaired = UI.versionRow(function()
+      if ImGui.Button(ctx, K.UPLOAD_BTN .. '##goupload', upW, 0) then
+        state.screen = 'upload'
+      end
+    end, upW)
+    -- A line of its own when there was no room beside the switcher, or no
+    -- switcher at all -- a production with nothing uploaded yet draws none, and
+    -- that is precisely the one a first render goes to. AFTER the row, not
+    -- before it: asked earlier this would read the previous frame's answer and
+    -- both would draw.
+    if not state.uploadBtnPaired then
+      if ImGui.Button(ctx, K.UPLOAD_BTN .. '##goupload2',
+                      math.max(150, math.min(220, ImGui.GetContentRegionAvail(ctx))), 0) then
+        state.screen = 'upload'
+      end
+      ImGui.Dummy(ctx, 0, 7)
+    end
     do
       local rx, ry = ImGui.GetCursorScreenPos(ctx)
       local rw     = ImGui.GetContentRegionAvail(ctx)
@@ -7371,6 +8900,843 @@ function UI.bound()
   UI.cardEnd(card)
   -- Switching production is in the menu now ("Change production"), which keeps
   -- this screen to the production itself.
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- UPLOAD SCREEN — send a render to CuePort as a new version
+-- ══════════════════════════════════════════════════════════════════════════════
+--
+-- One entry, from the player, because both ways out of here answer the same
+-- three questions (which kind, notify or not, keep the bounce or not). Two
+-- entries would be two places asking the same thing.
+K.UPLOAD_BTN = 'Upload new version'
+K.UP_SRC_LABELS = { 'Master mix', 'Via master', 'Stems' }
+K.UP_SRC_KEYS   = { 'master', 'viamaster', 'stems' }
+
+function UI.uploadDefaults()
+  local u = state.up
+  if u then return u end
+  u = {
+    bounds = 'project', source = 'master',
+    notify = true, keepRender = true, setStart = true,
+    trackType = nil, mode = nil, file = nil, fileInfo = nil,
+  }
+  state.up = u
+  return u
+end
+
+-- Which kind a new version would be. Prefilled from what the player has open,
+-- because that is what he was just listening to -- but BOTH are pressable here,
+-- unlike in the player. Two cases the prefill cannot cover: a production with no
+-- versions at all (the player draws no switch), and the first instrumental of a
+-- production (in the player that kind is dimmed, which is right for listening
+-- and wrong for uploading).
+function UI.uploadType()
+  local u = UI.uploadDefaults()
+  if u.trackType then return u.trackType end
+  local cur = UI.activeVersion()
+  if cur and cur.track_type then return cur.track_type end
+  return 'mixmaster'
+end
+
+-- What the new version will be called, asked of the versions we already know
+-- about. The server assigns the real number when the upload starts -- this is
+-- the preview, and it says so by being a preview rather than by being right.
+function UI.uploadNextNumber(trackType)
+  local list = state.versions or {}
+  local mx = 0
+  for _, v in ipairs(list) do
+    if v.track_type == trackType then
+      local n = tonumber(v.version_number) or 0
+      if n > mx then mx = n end
+    end
+  end
+  return mx + 1
+end
+
+function UI.uploadTargetLine()
+  local p = state.boundProduction
+  local tt = UI.uploadType()
+  return ('%s  \u{2192}  %s v%d'):format(
+    (p and p.title) or '?', UI.versionTypeLabel(tt), UI.uploadNextNumber(tt))
+end
+
+-- The file picker. GetUserFileNameForRead is native, so this adds no dependency
+-- -- JS_ReaScriptAPI would only give a prettier dialog and is optional here.
+function UI.uploadPickFile()
+  if not r.GetUserFileNameForRead then return end
+  local ok, path = r.GetUserFileNameForRead(Rnd.outDir() .. pathSep(),
+                                            'Choose the file to upload', '')
+  if not ok or not path or path == '' then return end
+  local u = UI.uploadDefaults()
+  if state.upload and (state.upload.phase == 'done' or state.upload.phase == 'error') then
+    state.upload = nil
+  end
+  UI.uploadUseFile(path)
+  if u.file and not u.fileError then
+    -- Same reason the render is armed rather than run: reading the peaks
+    -- blocks, and doing it inside the frame the button was pressed on freezes
+    -- the window with an unpressed-looking button on it.
+    u.status = 'Reading the waveform...'
+    u.pending, u.frameShown = 'peaks', false
+  end
+end
+
+-- Everything shown under the button is read off the FILE, not off the render
+-- dialog: this is also the check on the result, and a mono plugin at the end of
+-- the chain does not announce itself in any setting.
+function UI.uploadUseFile(path)
+  local u = UI.uploadDefaults()
+  u.file = path
+  u.fileInfo = Rnd.inspect(path)
+  -- A waveform belongs to one file. Carrying the previous one over would draw
+  -- the shape of the last render over the name of this one, which is the single
+  -- most convincing way to be wrong.
+  u.peaks = nil
+  local errs, warns = Rnd.check(u.fileInfo)
+  u.fileError = errs[1]
+  u.warnings = warns
+end
+
+-- The one thing that cannot be taken back after pressing: which version this
+-- becomes. Nothing is overwritten, ever -- every upload is a new version, the
+-- same as in the browser.
+-- Pressed. Everything that can be answered without doing anything is answered
+-- here, so the reason for a refusal appears on the frame he pressed on; the
+-- work itself is armed and happens one frame later.
+--
+-- Why not straight away: a render BLOCKS -- 0.23 s for two seconds of audio,
+-- minutes for a long project -- and doing that inside the frame that is being
+-- drawn means Reaper freezes with the old screen still up, showing a button
+-- that looks unpressed. Same shape as the A/B load: let one frame paint, then
+-- go. Reading the peaks blocks too, if only briefly.
+function UI.uploadStart(mode)
+  local u = UI.uploadDefaults()
+  if not state.boundProduction then return end
+  u.warnings = nil
+  -- A finished or failed upload is history the moment a new file is being made.
+  -- Left standing it would keep the veil's idea of "working" and the page's
+  -- idea of "done" alive at the same time.
+  if mode ~= 'send' and state.upload
+     and (state.upload.phase == 'done' or state.upload.phase == 'error') then
+    state.upload = nil
+  end
+
+  if mode == 'render' then
+    if u.bounds == 'timesel' and not Rnd.timeSelection() then
+      u.status = 'Nothing is selected in the timeline, so a time-selection render would write no file.'
+      return
+    end
+    -- A render no longer sends. It makes the file and stops, so the producer
+    -- gets to see what he made before it leaves the machine.
+    u.file, u.fileInfo, u.fileError, u.peaks = nil, nil, nil, nil
+    u.status = 'Rendering...'
+  elseif not u.file or u.fileError then
+    u.status = u.fileError or 'Choose a file first.'
+    return
+  end
+  u.pending, u.frameShown = mode, false
+end
+
+-- One frame later, from the loop.
+function UI.uploadPump()
+  local u = state.up
+  if not u or not u.pending then return end
+  if not u.frameShown then u.frameShown = true; return end
+  local mode = u.pending
+  u.pending, u.frameShown = nil, false
+
+  local p = state.boundProduction
+  if not p then return end
+  local tt = UI.uploadType()
+
+  if mode == 'render' then
+    local expect = nil
+    if u.bounds == 'timesel' then
+      local s, len = Rnd.timeSelection()
+      if not s then
+        u.status = 'Nothing is selected in the timeline, so a time-selection render would write no file.'
+        return
+      end
+      expect = len
+    end
+    local ok, info, warns = Rnd.run({
+      bounds = u.bounds, source = u.source, expectSec = expect,
+      versionKey = state.boundProductionId,
+    })
+    if not ok then u.status = tostring(info); return end
+    u.warnings = warns
+    -- Only now, and only for a render we actually made: shifting the ruler for
+    -- a run that failed would move his project for nothing.
+    --
+    -- Both kinds of render, and zero is a position like any other: a render
+    -- from the top of the project puts the ruler back to 0:00, which is the
+    -- case that used to be skipped and left the offset of the render before it
+    -- standing.
+    if u.setStart then
+      local startAt = 0
+      if u.bounds == 'timesel' then startAt = Rnd.timeSelection() or 0 end
+      setRenderStartAt(startAt)
+    end
+    UI.uploadUseFile(info.path)
+    -- Read here rather than at send time: the strip over the result card is
+    -- what makes this state worth stopping in, and reading it blocks -- doing
+    -- that while the window says "Rendering..." is the one moment it is free.
+    UI.uploadReadPeaks()
+    u.status = nil
+    return
+  end
+
+  if mode == 'peaks' then UI.uploadReadPeaks(); u.status = nil; return end
+  if mode ~= 'send' then u.status = nil; return end
+
+  if not u.file or u.fileError then
+    u.status = u.fileError or 'Choose a file first.'
+    return
+  end
+  local info = u.fileInfo or {}
+  if type(u.peaks) ~= 'table' or #u.peaks == 0 then UI.uploadReadPeaks() end
+  Up.begin({
+    path = u.file, productionId = state.boundProductionId, trackType = tt,
+    title = p.title, notify = u.notify, keepRender = u.keepRender,
+    duration = info.length,
+    waveform = u.peaks,
+  })
+  u.status = nil
+end
+
+-- The 150 numbers that travel with the file, read once and kept. Blocking, and
+-- named as such: it is a pass over every sample of the render.
+function UI.uploadReadPeaks()
+  local u = UI.uploadDefaults()
+  u.peaks = nil
+  if not u.file or u.fileError then return end
+  local info = u.fileInfo or {}
+  local ok, pk = pcall(Rnd.peaks, u.file, info.length)
+  if ok and type(pk) == 'table' and #pk > 0 then u.peaks = pk end
+end
+
+-- ── the render settings, said in one sentence ─────────────────────────────
+--
+-- Eight controls in a table answer "what can I set". Nobody asks that. The
+-- question in front of a render is "does this go out the way I want", and that
+-- is one sentence. The table is still there, one press away, for the times the
+-- answer is no.
+--
+-- Returns text, isWarning. The warning case is the one that has to be right:
+-- a summary that says "Time selection 0:00 to 0:08" while nothing is selected
+-- would be worse than no summary at all -- it would be a claim.
+function UI.renderSummary()
+  local u = UI.uploadDefaults()
+  local src = 'Master mix'
+  for i, k in ipairs(K.UP_SRC_KEYS) do
+    if k == u.source then src = K.UP_SRC_LABELS[i] end
+  end
+  if u.bounds ~= 'timesel' then
+    return 'The whole project, from 0:00 \u{00b7} ' .. src, false
+  end
+  local selStart, selLen = Rnd.timeSelection()
+  if not selStart then
+    return 'Time selection \u{2014} but nothing is selected in the timeline, so ' ..
+           'this would write no file.', true
+  end
+  local line = ('Time selection %s to %s (%s) \u{00b7} %s'):format(
+    formatTimestamp(selStart), formatTimestamp(selStart + selLen),
+    formatTimestamp(selLen), src)
+  if selStart > 0 and u.setStart then line = line .. ' \u{00b7} 0:00 = render start' end
+  return line, false
+end
+
+-- "Mix Master v3" -- the kind plus the number this upload WOULD become. The
+-- number is the highest one this kind already has plus one; with no versions
+-- list to go on the kind stands alone, because a guessed number on the one line
+-- that says what is about to happen is worse than no number.
+function UI.uploadTargetVersion()
+  local tt = UI.uploadType()
+  local label = UI.versionTypeLabel(tt)
+  local best = nil
+  for _, v in ipairs(UI.versionsFor() or {}) do
+    if v.track_type == tt then
+      local n = tonumber(v.version_number)
+      if n and (not best or n > best) then best = n end
+    end
+  end
+  if not best then return label end
+  return label .. ' v' .. tostring(best + 1)
+end
+
+-- There is a file and it passed the checks. Says nothing about whether it has
+-- been sent -- the card that shows it stays up either way, because a render
+-- that vanishes the moment it is uploaded takes the only proof of what was sent
+-- with it.
+function UI.uploadHasFile()
+  local u = state.up
+  return (u and u.file and not u.fileError) and true or false
+end
+
+-- This exact file has already gone up. Not "an upload happened": the name is
+-- compared, so a fresh render or another pick clears it by being a different
+-- file, and a second press on the same one cannot.
+function UI.uploadSent()
+  local u = state.up
+  if not u or not u.file then return false end
+  return u.sentFile ~= nil and u.sentFile == u.file
+end
+
+-- Pressable. There is a file, it has not been sent, and nothing is in flight.
+--
+-- Sending the same file twice is refused rather than made to replace anything.
+-- Every upload is a new version, in the browser and here -- so a second press
+-- would not correct the first, it would add a second identical version next to
+-- it, and the artist would have two things to listen to where there is one.
+-- Render again and the file changes; then it is a real second version and this
+-- opens up by itself.
+function UI.uploadReady()
+  local u = state.up
+  if not UI.uploadHasFile() then return false end
+  if UI.uploadSent() then return false end
+  if state.upload then return false end
+  return (u ~= nil) and not u.pending
+end
+
+-- How tall the strip may be this frame.
+--
+-- The trick is what it is measured against. Shrinking it by however much does
+-- not fit would oscillate: shrink, it fits, grow back, it does not, shrink. So
+-- the page height WITHOUT the strip is what is worked from, and that number
+-- does not move when the strip does. `state.bodyAvailH` is taken from the outer
+-- body, which does not resize itself to its contents -- asking the inner one
+-- would be the same feedback loop one level up.
+function UI.uploadWaveH()
+  local avail = tonumber(state.bodyAvailH) or 0
+  if avail <= 0 then state.upWaveH = K.UP_WAVE_H; return K.UP_WAVE_H end
+
+  -- The height of this strip is the one number on the page that is allowed to
+  -- move, and getting it to hold still took three attempts. What follows is the
+  -- reasoning, because the two wrong versions both looked right.
+  --
+  -- (1) Work "the page without the strip" out of the measured page height every
+  --     frame and derive the strip from it. On paper the strip cancels out and
+  --     the number is a fixed point. On the machine it was not: a screen
+  --     recording showed the last button jumping between three positions on
+  --     every frame. Frame-differencing that recording put the first changed
+  --     pixel exactly at the top of the strip, so the strip was the thing
+  --     moving, and everything under it went along.
+  --
+  -- (2) Key the height on the geometry of the window instead, measure once per
+  --     geometry, then latch. Right idea, wrong key: it used the content
+  --     region's WIDTH as part of it, and that width is not independent of the
+  --     page. When the page is too tall the body grows a scrollbar, which takes
+  --     the width down; the key changes, the strip resets to full height, the
+  --     page gets taller still, the strip shrinks, the page fits, the scrollbar
+  --     goes, the width comes back, the key changes again. The loop I thought I
+  --     had cut, re-tied one level up.
+  --
+  -- (3) This one. The key is the available HEIGHT alone, quantised, and a
+  --     vertical scrollbar does not change a height. Rounded to steps of 8 so a
+  --     pixel of wobble cannot re-key. Within one key the strip is measured
+  --     exactly once and then never reads anything the page produced again.
+  local key = math.floor(avail / 8)
+  if state.upFixedKey ~= key then
+    state.upFixedKey, state.upFixedH = key, nil
+    state.upWaveH = K.UP_WAVE_H
+    return K.UP_WAVE_H
+  end
+  if not state.upFixedH then
+    -- Only a page that was drawn WITH a full-height strip can tell us what the
+    -- rest of it costs.
+    local pageH = tonumber(state.upPageH) or 0
+    if pageH <= 0 or (tonumber(state.upWaveH) or 0) < K.UP_WAVE_H then
+      state.upWaveH = K.UP_WAVE_H
+      return K.UP_WAVE_H
+    end
+    state.upFixedH = pageH - K.UP_WAVE_H
+  end
+
+  local want = avail - state.upFixedH - K.UP_TAIL
+  if want > K.UP_WAVE_H   then want = K.UP_WAVE_H   end
+  if want < K.UP_WAVE_MIN then want = K.UP_WAVE_MIN end
+  state.upWaveH = want
+  return want
+end
+
+-- The waveform of the file that is about to go up, drawn from the same 150
+-- numbers that travel with it. Not decoration: eight seconds instead of three
+-- minutes, or a mix that fell silent halfway, is visible here and nowhere else.
+function UI.filePeaks(h)
+  local u = UI.uploadDefaults()
+  local pk = u.peaks
+  local w = ImGui.GetContentRegionAvail(ctx)
+  local x, y = ImGui.GetCursorScreenPos(ctx)
+  local dl = ImGui.GetWindowDrawList(ctx)
+  if type(pk) ~= 'table' or #pk == 0 then
+    -- No peaks is a fact, not a blank: say so rather than draw a flat line the
+    -- artist would read as silence.
+    ImGui.Dummy(ctx, 0, 4)
+    UI.slot(1, { 'No waveform could be read from this file.' })
+    return
+  end
+  local n = #pk
+  local step = w / n
+  local bw = math.max(1, math.floor(step) - 1)
+  local mid = y + h / 2
+  for i = 1, n do
+    local v = tonumber(pk[i]) or 0
+    if v < 0 then v = 0 elseif v > 1 then v = 1 end
+    local bh = math.max(1, v * (h / 2 - 1))
+    local bx = x + (i - 1) * step
+    ImGui.DrawList_AddRectFilled(dl, bx, mid - bh, bx + bw, mid + bh,
+                                 UI.peakTint(v), 1)
+  end
+  ImGui.Dummy(ctx, w, h)
+end
+
+-- Exactly `n` lines of lead-font text, wrapped by hand. Same reason as
+-- UI.slotWrap: the point is the fixed height, not the wrapping.
+function UI.leadLines(n, text)
+  ImGui.PushFont(ctx, FONT_BOLD, K.FONT_LEAD)
+  local w  = ImGui.GetContentRegionAvail(ctx)
+  local ls = UI.wrapLines(text, w, n)
+  for i = 1, n do
+    if ls[i] then ImGui.Text(ctx, ls[i]) else ImGui.Dummy(ctx, 0, UI.lineH()) end
+  end
+  ImGui.PopFont(ctx)
+end
+
+-- A line of text centred inside a block of exactly `h`, painted rather than laid
+-- out. Nothing here is an item, so the block costs `h` and not a pixel more --
+-- which is what lets the empty state and the waveform be the same height.
+function UI.hintIn(h, text)
+  local w = ImGui.GetContentRegionAvail(ctx)
+  local x, y = ImGui.GetCursorScreenPos(ctx)
+  local dl = ImGui.GetWindowDrawList(ctx)
+  local lh = UI.lineH()
+  ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
+  local tw = ImGui.CalcTextSize(ctx, text) or 0
+  if tw > w then text = UI.ellipsisEnd(text, w); tw = ImGui.CalcTextSize(ctx, text) or 0 end
+  ImGui.DrawList_AddText(dl, x + math.max(0, (w - tw) / 2),
+                         y + math.max(0, (h - lh) / 2), CP_COLORS.textDim, text)
+  ImGui.PopFont(ctx)
+  ImGui.Dummy(ctx, w, h)
+end
+
+-- Louder reads brighter. One expression, so the strip cannot drift apart from
+-- itself the way two call sites would.
+function UI.peakTint(v)
+  local a = 0x66 + math.floor(v * 0x99)
+  if a > 0xFF then a = 0xFF end
+  return (CP_COLORS.accent & 0xFFFFFF00) | a
+end
+
+-- The line under the title: everything that is TRUE about the file, read off
+-- the file itself rather than off the settings that were supposed to make it.
+function UI.fileFacts()
+  local u = UI.uploadDefaults()
+  local fi = u.fileInfo or {}
+  local bits = {}
+  if (fi.ext or '') ~= '' then bits[#bits+1] = fi.ext:upper() end
+  if (fi.channels or 0) > 0 then
+    bits[#bits+1] = (fi.channels == 1) and 'mono' or
+                    ((fi.channels == 2) and 'stereo' or (tostring(fi.channels) .. ' ch'))
+  end
+  if (fi.srate or 0) > 0 then bits[#bits+1] = ('%g kHz'):format(fi.srate / 1000) end
+  if (fi.length or 0) > 0 then bits[#bits+1] = formatTimestamp(fi.length) end
+  if (fi.bytes or 0) > 0 then bits[#bits+1] = ('%.1f MB'):format(fi.bytes / 1048576) end
+  return table.concat(bits, '  \u{00b7}  ')
+end
+
+function UI.upload()
+  local u = UI.uploadDefaults()
+  local p = state.boundProduction
+  if not p then state.screen = 'main'; return end
+  local up = state.upload
+
+  -- Latch the fact that THIS file went up, and what it became. Kept on the page
+  -- rather than read off state.upload every frame, because state.upload is
+  -- cleared the moment the next render starts and the stamp has to outlive that
+  -- -- otherwise pressing Render would quietly un-say "this was sent".
+  -- Keyed on the upload itself, not on the file name. Keyed on the name it
+  -- would re-stamp: leave a finished upload standing, render again, and the NEW
+  -- file would be marked as sent without ever having gone anywhere.
+  if up and up.phase == 'done' and u.file and u.sentFor ~= up then
+    u.sentFor = up
+    u.sentFile = u.file
+    u.sentNotified = up.notified and true or false
+    local v = up.version
+    u.sentVersion = (v and v.version_number)
+      and (UI.versionTypeLabel(v.track_type or UI.uploadType()) .. ' v' .. v.version_number)
+      or nil
+    -- The list this page counts from is the one fetched at the last sync, and
+    -- no sync happens between an upload and the next render. Without this it
+    -- would still hold v3 as the highest after v4 went up, so the button would
+    -- offer "Upload as v4" for a second time -- while the SERVER, which is the
+    -- one that assigns the number (MAX + 1), would make it v5. The button would
+    -- have been lying, not the upload.
+    --
+    -- So the list learns what was just made. The next sync overwrites it with
+    -- the server's own answer either way; this only has to hold until then.
+    UI.rememberVersion(v)
+  end
+
+  local pageY0 = ImGui.GetCursorPosY(ctx)
+
+  -- Nothing on this page appears or disappears. Every line that depends on a
+  -- setting sits in a slot of a fixed number of lines, and every explanation is
+  -- behind a "?" like everywhere else in this script. The first version had
+  -- paragraphs that came and went with the toggles, and each of them shoved
+  -- everything below it down the moment you pressed something.
+  -- Which production and which kind this becomes.
+  local function blockTarget(rowKey)
+  UI.section('New version')
+  UI.cardGrid('up_target', rowKey, function()
+    -- Two lines, always, whatever the title is and however wide the card is.
+    -- A wrapping Text here would be one line at one width and two at another --
+    -- and the width of this card is not independent of the page: too tall a
+    -- page grows a scrollbar in the body, which takes the width down. Any
+    -- height on this page that reacts to width is the same trap the waveform
+    -- fell into, one card further along.
+    UI.leadLines(2, UI.uploadTargetLine())
+    ImGui.Dummy(ctx, 0, 8)
+
+    local tt = UI.uploadType()
+    local labels, active = {}, 1
+    for i, k in ipairs(K.VERSION_TYPES) do
+      labels[i] = UI.versionTypeLabel(k)
+      if k == tt then active = i end
+    end
+    -- Both pressable, unlike the player's: a kind with nothing in it yet is
+    -- exactly the kind a first upload goes to.
+    --
+    -- The "?" sits at the end of this row, so the switcher asks for the width
+    -- that is left over rather than for all of it.
+    local helpGap, helpD = 8, 15
+    local segTop = ImGui.GetCursorPosY(ctx)
+    local pick, _, _, segH = UI.segmented('##upkind', labels, active,
+      math.min(360, ImGui.GetContentRegionAvail(ctx) - helpGap - helpD))
+    if pick and K.VERSION_TYPES[pick] then u.trackType = K.VERSION_TYPES[pick] end
+    ImGui.SameLine(ctx, 0, helpGap)
+    -- Centred against the switcher instead of sitting at the top of the line:
+    -- the ring is one text line tall and the switcher is 28, and ImGui aligns
+    -- items of different heights by their tops.
+    local helpLift = math.max(0, math.floor(((segH or 28) - UI.lineH()) / 2 + 0.5))
+    if helpLift > 0 then ImGui.SetCursorPosY(ctx, segTop + helpLift) end
+    -- What used to be a standing line under this row. It is a rule of the
+    -- product, not a state of this page: it is true before you press anything
+    -- and still true afterwards, so it belongs behind a "?" like every other
+    -- explanation here rather than costing a line every time the page is open.
+    UI.help('##upkindwhat', 'Every upload is a new version. Nothing is replaced, ' ..
+            'and no comment is carried over -- the same as uploading in the browser.')
+    ImGui.Dummy(ctx, 0, 6)
+
+    -- One line, always. Whether it is filled changes; how much room it takes
+    -- does not.
+    local cur = UI.activeVersion()
+    local note = nil
+    if cur and cur.track_type and cur.track_type ~= tt then
+      note = 'You are listening to ' .. UI.versionTypeLabel(cur.track_type) ..
+             ', this goes to ' .. UI.versionTypeLabel(tt) .. '.'
+    end
+    -- Nothing here about which worker the upload takes. It was one line in this
+    -- slot and it is out on the user's decision: the route is a fact about our
+    -- deployment, not about his render, and the page is about his render. Where
+    -- it still is said: the sync line marks every answer that did not come from
+    -- production, and the About screen names it under what leaves this machine.
+    -- The routing itself is untouched.
+    UI.slot(1, { note })
+  end)
+  end
+
+  -- How the file is made.
+  local function blockRender(rowKey)
+  UI.section('Render')
+  UI.cardGrid('up_render', rowKey, function()
+    local segW = math.max(160, math.min(300, ImGui.GetContentRegionAvail(ctx) - 130))
+
+    UI.row('Bounds', 'Whole project starts at 0:00. Time selection renders only ' ..
+           'what is selected in the timeline. Nothing else about your render ' ..
+           'settings is changed, and all of them are put back afterwards.',
+           segW, function()
+      local b = UI.segmented('##upbounds', { 'Whole project', 'Time selection' },
+                             u.bounds == 'timesel' and 2 or 1, segW)
+      if b == 1 then u.bounds = 'project' elseif b == 2 then u.bounds = 'timesel' end
+    end, nil, 28)
+
+    -- Two lines, always, and WRAPPED. Measured rather than asked: a dialog that
+    -- comes up every time gets clicked away, and start == end is Reaper for
+    -- "nothing selected" -- such a render writes no file at all. It used to be
+    -- one clipped line, which cut this sentence off before the part that says
+    -- what happens.
+    local selStart, selLen = Rnd.timeSelection()
+    local selLine
+    if u.bounds ~= 'timesel' then
+      selLine = 'The whole project, from 0:00.'
+    elseif not selStart then
+      selLine = 'Nothing is selected in the timeline. This would write no file.'
+    else
+      selLine = ('Selected: %s to %s  (%s)'):format(
+        formatTimestamp(selStart), formatTimestamp(selStart + selLen),
+        formatTimestamp(selLen))
+    end
+    UI.slotWrap(2, selLine, u.bounds == 'timesel' and not selStart)
+
+    UI.rowSep()
+    UI.row('Source', 'Master mix is the whole mix. Via master sends the selected ' ..
+           'tracks through the master chain. Stems writes the selected tracks on ' ..
+           'their own, which is more than one file -- an upload takes one.',
+           segW, function()
+      local activeSrc = 1
+      for i, k in ipairs(K.UP_SRC_KEYS) do if k == u.source then activeSrc = i end end
+      local sPick = UI.segmented('##upsrc', K.UP_SRC_LABELS, activeSrc, segW)
+      if sPick and K.UP_SRC_KEYS[sPick] then u.source = K.UP_SRC_KEYS[sPick] end
+    end, nil, 28)
+
+    ImGui.Dummy(ctx, 0, 6)
+    UI.slot(1, { 'FLAC 24 bit \u{00b7} stereo \u{00b7} project rate \u{00b7} your own ' ..
+                 'settings are put back afterwards' })
+  end)
+  end
+
+  -- What goes out. Full width, at the foot of the page, and ALWAYS there --
+  -- a waveform in a half-width column is one nobody can read, and a card that
+  -- appears only once something has been rendered makes the page jump at the
+  -- moment the producer is looking somewhere else.
+  --
+  -- Three states, one height. Empty it says what to do; with a file it shows
+  -- the file; after the upload it keeps showing the file and says so. The last
+  -- one matters: the render is the only proof of what was actually sent, and
+  -- clearing it away the second it lands takes that with it.
+  local function blockResult()
+    UI.section('What goes out')
+    UI.cardGrid('up_result', nil, function()
+      local has = UI.uploadHasFile()
+      local sent = UI.uploadSent()
+
+      ImGui.PushFont(ctx, FONT_BOLD, K.FONT_LEAD)
+      ImGui.Text(ctx, p.title .. '  \u{2192}  ' ..
+                      (sent and (u.sentVersion or UI.uploadTargetVersion())
+                             or UI.uploadTargetVersion()))
+      ImGui.PopFont(ctx)
+      UI.slot(1, { has and UI.fileFacts() or nil })
+      ImGui.Dummy(ctx, 0, 6)
+
+      -- The stamp sits above the waveform, in its own line, so the strip below
+      -- it is the same strip it was a moment ago rather than a redrawn one.
+      UI.slot(1, { sent and ('UPLOADED' ..
+                   (u.sentNotified and '  \u{00b7}  the artist has been told'
+                                    or '  \u{00b7}  the artist was not told')) or nil },
+              sent)
+
+      local waveH = UI.uploadWaveH()
+      if has then
+        UI.filePeaks(waveH)
+      else
+        -- Exactly the same cost as the waveform: ONE Dummy of the same height,
+        -- with the line painted into it rather than laid out. Built out of
+        -- layout items it came to a few pixels more -- the spacing between
+        -- them -- so the page was a different height with a file than without
+        -- one, and the height worked out for the one state was wrong for the
+        -- other.
+        UI.hintIn(waveH, 'Render your mix, or choose a file. It appears here ' ..
+                         'before anything is sent.')
+      end
+
+      ImGui.Dummy(ctx, 0, 6)
+      UI.slot(1, { has and UI.ellipsisMid(u.file, ImGui.GetContentRegionAvail(ctx)) or nil })
+      -- The warnings from Rnd.check. They are not stops -- the file is fine to
+      -- send, it just may not be what he meant -- so they sit here, where he is
+      -- looking anyway, rather than in a dialog he would click away.
+      UI.slot(1, { has and (u.warnings and u.warnings[1]) or nil }, true)
+    end)
+  end
+
+  -- What happens once it is up.
+  local function blockAfter(rowKey)
+  UI.section('When it is done')
+  UI.cardGrid('up_after', rowKey, function()
+    UI.row('Tell the artist', 'CuePort sends no mail for a new version by itself ' ..
+           '-- in the browser the producer is already there to say so. From here, ' ..
+           'nothing reaches the artist unless this is on.', 32, function()
+      local hit, on = UI.toggle('##upnotify', u.notify)
+      if hit then u.notify = on end
+    end, nil, K.TOGGLE_H)
+    UI.rowSep()
+    UI.row('Keep the render', 'The file stays in your project folder. The A/B ' ..
+           'cleanup does not touch it.', 32, function()
+      local hit, on = UI.toggle('##upkeep', u.keepRender)
+      if hit then u.keepRender = on end
+    end, nil, K.TOGGLE_H)
+
+    UI.rowSep()
+    -- It sits here rather than under Bounds on the user's call. It is a change
+    -- to HIS project that outlives the render -- the ruler stays shifted -- so
+    -- it belongs with the other two things that happen to the world rather than
+    -- to the file.
+    --
+    -- And it is always pressable, which it was not: it used to grey itself out
+    -- whenever the render already began at 0:00. That reading was wrong. If the
+    -- ruler is still shifted from an earlier render and this one starts at the
+    -- top of the project, then moving 0:00 to the render start is exactly what
+    -- has to happen -- it puts the ruler BACK. Greyed out, the project kept the
+    -- old offset and every comment on the new version landed askew, which is
+    -- the very thing this row exists to prevent.
+    UI.row('Move 0:00 to the render start',
+           'The file starts where the render does, so without this every ' ..
+           'comment lands that far away from where it was meant -- silently. ' ..
+           'This shifts the whole ruler, not just the marker: a render from the ' ..
+           'top of the project moves it back to zero.',
+           32, function()
+      local hit, on = UI.toggle('##upstart', u.setStart)
+      if hit then u.setStart = on end
+    end, nil, K.TOGGLE_H)
+  end)
+  end
+
+  -- The act. Three controls, and the SAME three in every state -- one press
+  -- sends, the other two make a different file. They only ever grey out; what
+  -- the card says changes, what it offers does not. A card whose buttons are
+  -- swapped out under the pointer is one you have to re-read every time.
+  local function blockSend(rowKey)
+  UI.section('Send it')
+  UI.cardGrid('up_go', rowKey, function()
+    -- Two lines about what pressing would do, or what the last press did.
+    local line
+    if up and up.phase == 'error' then
+      line = 'Stopped: ' .. tostring(up.error)
+    elseif Up.busy() or u.pending then
+      -- While the veil is up it carries the progress line and the way out. Two
+      -- copies of the same sentence on one screen is not a busy state, it is a
+      -- bug -- so the card holds its height and says nothing.
+      line = (not UI.busy()) and ((Up.busy() and Up.progressLine()) or u.status) or nil
+    elseif UI.uploadSent() then
+      line = 'Sent. Render again or choose another file to make the next version.'
+    elseif UI.uploadHasFile() then
+      line = 'Nothing is replaced. This becomes ' .. UI.uploadTargetVersion() ..
+             (u.notify and ', and the artist gets a mail.' or '. The artist is not told.')
+    else
+      line = u.fileError or u.status
+    end
+    UI.slotWrap(2, line, true)
+    ImGui.Dummy(ctx, 0, 8)
+
+    local availB = ImGui.GetContentRegionAvail(ctx)
+    local canSend = UI.uploadReady()
+    if not canSend and ImGui.BeginDisabled then ImGui.BeginDisabled(ctx, true) end
+    if UI.primaryButton('Upload as ' .. UI.uploadTargetVersion() .. '##upsend', availB)
+       and canSend then
+      UI.uploadStart('send')
+    end
+    if not canSend and ImGui.EndDisabled then ImGui.EndDisabled(ctx) end
+
+    ImGui.Dummy(ctx, 0, 8)
+    local busy = Up.busy() or u.pending
+    if busy and ImGui.BeginDisabled then ImGui.BeginDisabled(ctx, true) end
+    local halfB = (availB - 10) / 2
+    local sideBySide = halfB >= 130
+    local bw = sideBySide and halfB or availB
+    if ImGui.Button(ctx, 'Render##upredo', bw, 0) and not busy then UI.uploadStart('render') end
+    if sideBySide then ImGui.SameLine(ctx, 0, 10) else ImGui.Dummy(ctx, 0, 8) end
+    if ImGui.Button(ctx, 'Choose a file...##uppick', bw, 0) and not busy then
+      UI.uploadPickFile()
+    end
+    if busy and ImGui.EndDisabled then ImGui.EndDisabled(ctx) end
+  end)
+  end
+
+  -- Leaving. Outside both cards and outside the columns, because it is not part
+  -- of sending: three buttons of equal weight in one box read as three ways of
+  -- doing the same thing, and the one that goes back is not one of them.
+  local function blockLeave()
+    ImGui.Dummy(ctx, 0, 10)
+    if Up.busy() or u.pending then
+      ImGui.Dummy(ctx, 0, ImGui.GetFrameHeight and ImGui.GetFrameHeight(ctx) or 24)
+      return
+    end
+    local sentV = (up and up.phase == 'done') and up.version or nil
+    if ImGui.Button(ctx, 'Back to the production##upleave', 200, 0) then
+      state.upload = nil
+      state.screen = 'main'
+      -- Land on the version that was just sent, not on the one that was open
+      -- before it. doSync asks for `state.selectedVersionId`, so without this
+      -- the sync right after an upload fetches the OLD version: its comments,
+      -- its markers and its waveform, while the producer is looking for the
+      -- render he just made. Same route as the switcher, so the A/B reference
+      -- for the previous mix comes down with it.
+      --
+      -- `filename` is what the version list calls it; the upload answer calls
+      -- the same string `name`. The A/B file name and the download URL are
+      -- built from it, so it has to be the one the list would have given.
+      if sentV and sentV.id then
+        UI.switchVersion({ id = sentV.id, filename = sentV.name, label = sentV.label,
+                           version_number = sentV.version_number,
+                           track_type = sentV.track_type })
+      elseif sentV then
+        queueSync()
+      end
+    end
+  end
+
+  -- Two columns when there is room for them, one when there is not.
+  --
+  -- Every row on this page is a label at the left edge and its control at the
+  -- right, so in a wide window the middle was empty while the page itself ran
+  -- off the bottom and had to be scrolled -- reported from the device. Side by
+  -- side, the same content is about half as tall and the empty middle is what
+  -- pays for it.
+  --
+  -- The threshold is per column, not per window: below it the page is exactly
+  -- the page it has always been, stacked, which is the only shape a narrow
+  -- docker can hold. Decisions on the left, the button on the right.
+  local availUp = ImGui.GetContentRegionAvail(ctx)
+  -- Two columns above the threshold, back to one only well below it. The plain
+  -- comparison sat on a knife edge for a reason that is easy to miss: a page
+  -- that does not fit grows a scrollbar, the scrollbar takes a few pixels of
+  -- width, and at a window width near the threshold that is enough to flip the
+  -- whole layout -- which changes the height, which decides the scrollbar. The
+  -- gap is what makes that impossible rather than unlikely.
+  local twoCol = state.upTwoCol
+  if twoCol == nil then twoCol = availUp >= K.UP_TWO_COL_MIN end
+  if availUp >= K.UP_TWO_COL_MIN then twoCol = true
+  elseif availUp < K.UP_TWO_COL_MIN - K.UP_TWO_COL_HYST then twoCol = false end
+  state.upTwoCol = twoCol
+  if twoCol then
+    local colW = math.floor((availUp - K.UP_COL_GAP) / 2)
+    local cf = ImGui.ChildFlags_AutoResizeY and ImGui.ChildFlags_AutoResizeY() or 0
+    -- Same contract as UI.cardBegin: ReaImGui closes the child itself when
+    -- BeginChild returns false, so EndChild is only ours to call when it is
+    -- open. Calling it either way is one End too many and takes the window
+    -- with it.
+    -- Row by row, not column by column. Two stacks side by side line up at the
+    -- top and nowhere else; drawn as rows, the second pair of headings sits on
+    -- one line because the pair above it is one height.
+    local lOpen = ImGui.BeginChild(ctx, '##upcolL', colW, 0, cf)
+    if lOpen then blockTarget('r1') end
+    if lOpen then ImGui.EndChild(ctx) end
+    ImGui.SameLine(ctx, 0, K.UP_COL_GAP)
+    local rOpen = ImGui.BeginChild(ctx, '##upcolR', colW, 0, cf)
+    if rOpen then blockAfter('r1') end
+    if rOpen then ImGui.EndChild(ctx) end
+    UI.cardRow('r1', 'up_target', 'up_after')
+
+    ImGui.Dummy(ctx, 0, 2)
+    local l2 = ImGui.BeginChild(ctx, '##upcolL2', colW, 0, cf)
+    if l2 then blockRender('r2') end
+    if l2 then ImGui.EndChild(ctx) end
+    ImGui.SameLine(ctx, 0, K.UP_COL_GAP)
+    local r2 = ImGui.BeginChild(ctx, '##upcolR2', colW, 0, cf)
+    if r2 then blockSend('r2') end
+    if r2 then ImGui.EndChild(ctx) end
+    UI.cardRow('r2', 'up_render', 'up_go')
+  else
+    blockTarget(); blockRender(); blockAfter(); blockSend()
+  end
+  blockResult()
+  blockLeave()
+  -- What the page took, so the strip above knows how much room is left over
+  -- next frame. Measured here rather than one level up: this is the only place
+  -- that knows where the page began.
+  local endY = ImGui.GetCursorPosY(ctx)
+  if pageY0 and endY and endY > pageY0 then state.upPageH = endY - pageY0 end
+
 end
 
 function UI.main()
@@ -8131,6 +10497,19 @@ local function loop()
   -- a single short read, so it costs the frame rate nothing.
   pcall(Upd.poll)
 
+  -- An upload in flight advances by exactly one step per frame: one part, then
+  -- back to the loop. Each step still blocks while curl runs, but between them
+  -- the window redraws and says how far along it is -- one call for the whole
+  -- file would be a minute in which Reaper looks hung.
+  if Up.busy() then
+    if state.upload.frameShown then pcall(Up.step)
+    else state.upload.frameShown = true end
+  end
+  -- The render, armed by the button and run here so the "Rendering..." frame
+  -- gets painted first. It blocks while it runs, which is exactly why it must
+  -- not run inside the frame that is being drawn.
+  if state.up and state.up.pending then pcall(UI.uploadPump) end
+
   -- A/B deferred load: let one "loading…" frame paint, THEN run the blocking
   -- download + track build (curl can freeze the UI for a couple of seconds).
   if state.ab.pendingLoad then
@@ -8316,6 +10695,7 @@ local function loop()
           elseif state.screen == 'pairing'  then UI.pairing()
           elseif state.screen == 'settings' then UI.settings()
           elseif state.screen == 'about'    then UI.about()
+          elseif state.screen == 'upload'   then UI.upload()
           elseif state.screen == 'deps'     then UI.deps()
           elseif state.screen == 'main'     then UI.main()
           end
@@ -8471,6 +10851,10 @@ do
   end
 
   loadState()
+  -- A render that Reaper died in the middle of leaves our output folder and our
+  -- format in the producer's render dialog. The note is written before the first
+  -- write and worked off here, into the project it names and no other.
+  Rnd.repairIfNeeded()
   -- Starting in the background only makes sense once there is a token: without
   -- one the pill cannot draw either, so a hidden instance would show nothing
   -- whatsoever — and there is nothing to stay quiet about, since no production

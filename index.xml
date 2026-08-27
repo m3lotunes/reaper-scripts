@@ -8,7 +8,7 @@
 \f0\fs22
 \fs28\b CuePort Sync\b0\fs22\par
 \par
-Reaper integration for CuePort. The comments on a production, the artist's and the studio's, threads and all, are pulled into your project as native markers and drawn on a waveform inside the window. You can answer them from the DAW, delete a reply again, and switch between every version the studio has uploaded.\par
+Reaper integration for CuePort. The comments on a production, the artist's and the studio's, threads and all, are pulled into your project as native markers and drawn on a waveform inside the window. You can answer them from the DAW, delete a reply again, switch between every version the studio has uploaded, and send a new render back as a version without leaving Reaper.\par
 \par
 \b Features\b0\par
 - Device-code pairing with the CuePort studio portal, no passwords in the script\par
@@ -19,6 +19,9 @@ Reaper integration for CuePort. The comments on a production, the artist's and t
 - Reply to a comment from the DAW, and delete a reply you sent\par
 - Project markers for the comments, optional, and a render start marker of your own\par
 - A/B compare against the uploaded version, routed past the master so the finished bounce stays uncolored\par
+- Render straight from Reaper and send it back as a new version, without the browser\par
+- The render settings are borrowed for the one pass and put back byte for byte afterwards\par
+- The finished render is shown to you first, with its length, its waveform and anything that looks off\par
 - Floating transport pill for one-click sync while the window is out of the way\par
 - Keeps itself up to date, through ReaPack when it manages this copy\par
 - Per-project binding, so every .rpp remembers its own production and version\par
@@ -44,17 +47,31 @@ MIT licensed. The full text, the third-party notices and a list of everything th
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="1.30.6" author="CuePort" time="2026-08-21T14:24:09Z">
+      <version name="1.34.0" author="CuePort" time="2026-08-27T22:03:41Z">
         <changelog><![CDATA[
-CuePort Sync 1.30.6
+CuePort Sync 1.34.0
 
 Only one version is listed here, and it is the one that is really on the server. Older builds are not kept, so listing them would offer downloads that cannot be delivered.
 
 WHAT IS NEW
 
-The update check no longer runs in a loop. Once a check came back saying you are on the current version, 1.30.5 treated that answer as spent and asked again a quarter of a second later, for as long as the script ran. The card on the Dependencies page flicked between the spinner and the result, and Github was asked for the same 200 bytes over and over. Measured after the fix: one request per check, where the old build sent 112 over the same stretch.
+Send a render back to CuePort, without the browser. Work through the artist's feedback, render, and the file goes up as a new version straight from Reaper. There is a page for it: it borrows Reaper's render settings for the one pass and puts all of them back afterwards, byte for byte, whether the render worked or not. If Reaper should die in the middle, the next start puts them back.
 
-Pressing "Check now" also goes around Github's five minute cache, so the button reports what is on the server right now rather than what was there a few minutes ago. The scheduled once-a-day look still uses the cache.
+The finished render is shown to you before anything is sent: its length, its channels, its waveform, and anything that looks off, like a time selection you forgot about. Nothing leaves until you press the button.
+
+Every upload becomes a new version, exactly as it would from the studio portal. Nothing is overwritten, and no comment is carried over or marked as answered. You decide per upload whether the artist gets an email about it, because from the DAW nothing would reach them otherwise.
+
+The badge at the top now names the studio the device is paired with, instead of just saying CONNECTED. A name you do not recognise is worth noticing.
+
+The version switcher is there before the first sync. The list survives a restart, so the versions of the bound production are on screen the moment the window opens.
+
+FIXED
+
+The peaks of the A/B reference are built once, when it is downloaded. They used to be recomputed every time Reaper came back to the front after a minimise or a switch to another program.
+
+The waveform the script uploads is now built the same way CuePort builds it, so the picture in Reaper and the picture in the browser are the same picture.
+
+The A/B track no longer stays in the track list after it is hidden, and an already-open Track Manager notices it right away. Reaper only refreshes that window on a selection change, which is why a click used to be needed.
 
 WHAT THE SCRIPT DOES
 

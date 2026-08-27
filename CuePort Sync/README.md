@@ -19,13 +19,39 @@ it twice to remove.
 ## Features
 
 - **Device-code pairing** with the CuePort studio portal — no passwords in the
-  script, no manual tokens to copy around.
+  script, no manual tokens to copy around. Once paired, the badge in the
+  header names the **studio** rather than saying `CONNECTED` — which studio this
+  device is attached to is the question worth answering before anything is
+  uploaded, and a name that is not yours is meant to be noticed.
 - **Production picker** grouped by artist with an inline search filter. Built
   like the rest: section labels over cards, the search row on one, the
   production you would go back to on another, and the list itself in the same
   recessed well the comment column uses, sized to the room the window has
   rather than to a fixed box. The disclosure arrows beside each artist are drawn, not
   typed: an arrow glyph lands in whatever font the platform picks for it.
+- **Send a render straight to CuePort** — a button in the production view opens
+  a page with the two things you actually choose (bounds, and whether the source
+  is the master mix, the selected tracks through it, or stems), and two ways out
+  at the bottom: render one now, or take a file that is already there. What it
+  becomes is written at the top before anything happens — `Love in the Dark →
+  Mix Master v4`. Every upload is a **new version**; nothing is ever replaced,
+  exactly as in the browser.
+  Format, bit depth, sample rate and channel count are fixed at FLAC 24 bit,
+  project rate, stereo — that is the file CuePort wants, and the same one the
+  studio portal makes out of a WAV. **Your render settings are borrowed, not
+  taken:** all twenty-one fields are written down first and put back straight
+  afterwards, whether the render worked or not. If REAPER should die in the
+  middle of one, the next start puts them back — into that project and no other.
+  With **Time selection** the script measures rather than asks: a selection that
+  is not there is stated as a fact instead of being a dialog you learn to click
+  away, and one that does not start at 0:00 offers to move the ruler with it,
+  because otherwise every comment lands quietly askew by the offset.
+  Afterwards the file itself is checked, not the settings — a mono plugin at the
+  end of the master chain makes a mono file without any setting saying so. The
+  waveform and the length go up with it, so the artist gets a player with
+  something drawn in it rather than an empty one. Whether the artist is told at
+  all is a switch on the page: CuePort sends no mail for a new version by
+  itself, and from the DAW nothing would reach them otherwise.
 - **Cover art** — the artwork a production carries in CuePort, shown as a tile
   in the picker list and large in the corner of the production header, with the
   loudness figures to its left. It is drawn rounded and sits on a soft shadow,
@@ -526,12 +552,17 @@ unless every one of them is green:
 
 ```sh
 luacheck "CuePort Sync/cueport_sync.lua"   # 0 warnings is the baseline
-lua5.4 test/test-ab-lifecycle.lua       # 210 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
+lua5.4 test/test-ab-lifecycle.lua       # 272 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
 lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unreachable, the startup switch, the window after a restart
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
-lua5.4 test/test-ui-balance.lua         # 1857 assertions: every screen leaves ImGui's stacks clean
-lua5.4 test/test-narrow.lua             # 38 assertions: nothing is wider than the window
-lua5.4 test/test-update.lua             # 110 assertions: version compare, the three pre-replace checks, both install routes, restart
+lua5.4 test/test-ui-balance.lua         # 4411 assertions: every screen leaves ImGui's stacks clean
+lua5.4 test/test-narrow.lua             # 48 assertions: nothing is wider than the window
+lua5.4 test/test-update.lua             # 119 assertions: version compare, the three pre-replace checks, both install routes, restart
+lua5.4 test/test-render.lua             # 180 assertions: the render pass, the settings borrowed and put back, the upload page
+lua5.4 test/test-render-probe.lua       # 39 assertions: the render probe reads without changing anything
+lua5.4 test/test-peaks-probe.lua        # 25 assertions: the peaks probe, and that it removes the track it needs
+lua5.4 test/test-probe-enums.lua        # 26 assertions: the enum probe writes nothing at all
+lua5.4 test/test-probe-trackmanager.lua # 51 assertions: the track-manager probe cleans up and restores the selection
 ```
 
 One more runs on a platform none of us has. `test/test-windows-curl.lua`
@@ -605,9 +636,12 @@ touched. The same list is on the script's own **About** screen.
 | One audio file in a folder `CuePort A-B` next to the `.rpp` | same; removed once the project has been saved without the reference in it |
 | The bound production, which version of it you are looking at, and a cache of that version's comments and waveform, in the project's extension data | on binding, on switching version and on sync — this marks the project modified |
 | The edit cursor | when you click the waveform or a comment |
+| The render settings | while a render for CuePort runs — all twenty-one fields are written down first and put back straight afterwards, and a crash mid-render is repaired at the next start |
+| One audio file `cueport_render_...` beside the `.rpp` | for each render sent to CuePort; it stays unless you turn **Keep the render** off, and the A/B cleanup does not touch it |
+| One empty track, for a fraction of a second | to read the waveform off the finished render — there is no way to read peaks from a file that is not in the project; it is removed again in the same undo step |
 
-Syncing markers, setting or clearing the render start and removing the A/B
-track are named undo steps. Inserting the A/B track is not — use **Remove**
+Syncing markers, setting or clearing the render start, reading the waveform and
+removing the A/B track are named undo steps. Inserting the A/B track is not — use **Remove**
 rather than Undo for that one.
 
 **Which host it talks to.** CuePort, and nothing else — with one exception,
@@ -620,7 +654,8 @@ deployed. Production is asked first on every sync, so the moment the release
 catches up the second call stops happening and the badge goes back to
 `CONNECTED`.
 
-Nothing from your project is uploaded. What leaves the machine is a device
+Nothing from your project is uploaded unless you press the upload button, and
+then it is the one rendered file, its length and its waveform. What leaves the machine is a device
 token, the id of the production you picked and the version you are looking at;
 what comes back is the comment list, the list of versions, the waveform, the
 track length and, for A/B, the audio of that version. The two things the script
