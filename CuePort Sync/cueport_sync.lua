@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.34.0
+-- @version 1.35.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -86,7 +86,7 @@
 
 local K = {}
 
-K.VERSION            = '1.34.0'
+K.VERSION            = '1.35.0'
 K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 
 K.EXT_NS                 = 'CuePort'
@@ -345,18 +345,44 @@ local function setProjExt(key, v) r.SetProjExtState(0, K.EXT_NS, key, v or '') e
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function isWindows() return r.GetOS():find('Win') ~= nil end
+local function pathSep() return isWindows() and '\\' or '/' end
 
-local function tmpPath(suffix)
-  -- Use /tmp on Unix (no spaces, reliable), Reaper resource dir on Windows
-  if isWindows() then
-    local dir = r.GetResourcePath()
-    return dir .. '\\cueport_tmp_' .. suffix
-  else
-    return '/tmp/cueport_tmp_' .. suffix
-  end
+-- Zitieren fuer die Shell, an die `ExecProcess` seine Zeile uebergibt.
+--
+-- POSIX: alles in einfache Anfuehrungszeichen, ein einfaches
+-- Anfuehrungszeichen im Wert wird zu '\'' -- danach ist jedes Zeichen
+-- woertlich, auch ; | & $ und der Backtick. In doppelten waeren $, ` und
+-- der Rueckstrich weiterhin aktiv.
+local function shQuote(s) return "'" .. s:gsub("'", "'\\''") .. "'" end
+
+-- Ein Pfad fuer die Kommandozeile. Unter Windows fuehrt `cmd.exe` einfache
+-- Anfuehrungszeichen NICHT als Zitat, sie wuerden Teil des Dateinamens --
+-- dort also doppelte, in denen & | < > ^ ohnehin woertlich sind, und ein "
+-- kann in einem Windows-Dateinamen gar nicht vorkommen.
+local function pathQuote(path)
+  if isWindows() then return '"' .. path .. '"' end
+  return shQuote(path)
 end
 
-local function pathSep() return isWindows() and '\\' or '/' end
+-- Ablage der temporaeren curl-Dateien (Konfiguration, Antwort, Downloads).
+--
+-- Sie liegen in REAPERs eigenem Ressourcenverzeichnis, also im Verzeichnis
+-- des angemeldeten Benutzers, nicht in einer gemeinsamen Ablage des Rechners.
+-- Der Name traegt zusaetzlich einen Zufallsteil je Lauf, damit zwei
+-- gleichzeitig laufende REAPER-Instanzen einander nicht ins Gehege kommen.
+--
+-- Jede Verwendung eines solchen Pfades steht in Anfuehrungszeichen; die
+-- frueher noetige Ruecksicht auf Pfade ohne Leerzeichen entfaellt damit.
+local TMP_TAG = (function()
+  local seed = math.floor((r.time_precise and r.time_precise() or os.clock()) * 1000) + os.time()
+  math.randomseed(seed % 2147483647)
+  return string.format('%08x%06x', seed % 0xffffffff, math.random(0, 0xffffff))
+end)()
+
+local function tmpPath(suffix)
+  return r.GetResourcePath() .. pathSep() .. 'cueport_tmp_' .. TMP_TAG .. '_' .. suffix
+end
+
 
 -- Directory part of a full path ('' when there is none).
 local function dirNameOf(path)
@@ -387,6 +413,15 @@ local function curlBinary()
   return 'curl'  -- last resort
 end
 
+-- Die curl-Zeile. Der Programmname ist eine der vier fest eingetragenen
+-- Zeichenketten aus `curlBinary` und bleibt unter Windows unzitiert, wie
+-- gehabt; zitiert wird der Pfad, der aus `GetResourcePath` stammt.
+local function curlCfgCmd(cfgPath)
+  local bin = curlBinary()
+  if not isWindows() then bin = shQuote(bin) end
+  return bin .. ' --config ' .. pathQuote(cfgPath)
+end
+
 -- Check whether curl is callable from Reaper's ExecProcess context. Runs
 -- "curl --version" once and caches the result (exec is not free, ~50-200ms).
 -- Returns: ok (bool), versionLine (string or nil)
@@ -394,12 +429,8 @@ local _curlCheck = nil
 local function checkCurl(force)
   if _curlCheck ~= nil and not force then return _curlCheck.ok, _curlCheck.version end
   local bin = curlBinary()
-  local cmd
-  if isWindows() then
-    cmd = bin .. ' --version'
-  else
-    cmd = '"' .. bin .. '" --version'
-  end
+  if not isWindows() then bin = shQuote(bin) end
+  local cmd = bin .. ' --version'
   local raw = r.ExecProcess(cmd, 3000)
   local ok, version = false, nil
   if raw then
@@ -517,7 +548,7 @@ local function httpRequest(method, url, headers, bodyStr, opts)
   end
 
   -- Execute curl
-  local curlCmd = curlBinary() .. ' --config "' .. cfgPath .. '"'
+  local curlCmd = curlCfgCmd(cfgPath)
   local raw = r.ExecProcess(curlCmd, math.floor(maxTime * 1000) + 5000)
   local exitCode, curlOut = parseExecOutput(raw)
 
@@ -1405,14 +1436,38 @@ end
 -- OS helpers
 -- ══════════════════════════════════════════════════════════════════════════════
 
+-- `ExecProcess` uebergibt die Zeile an eine echte Shell, nicht an ein
+-- Argument-Feld -- alles, was dort hineingeschrieben wird, gehoert deshalb
+-- zitiert. Die Pairing-URL kommt aus der Antwort des Servers
+-- (`verification_url_complete`), also aus einer Quelle, die dieses Skript
+-- nicht kontrolliert, und `startPairing` oeffnet sie ohne Zutun des Nutzers.
+--
+-- Zwei Riegel, absichtlich beide:
+--   1. Es wird nur geoeffnet, was wie eine http(s)-Adresse aussieht -- keine
+--      Steuerzeichen, kein Leerraum, kein Anfuehrungszeichen (das braucht
+--      eine echte URL nie, es gehoert prozentkodiert).
+--   2. Und selbst dann wird zitiert, statt sich auf Punkt 1 zu verlassen.
+local function urlIsSafe(url)
+  if type(url) ~= 'string' or #url == 0 or #url > 2048 then return false end
+  if not url:match('^https?://[^%s]+$') then return false end
+  -- %c faengt Steuerzeichen samt Zeilenumbruch; ein " bricht unter Windows
+  -- aus den Anfuehrungszeichen von `start` aus.
+  if url:find('[%c"]') then return false end
+  return true
+end
+
 local function openUrl(url)
+  if not urlIsSafe(url) then return false end
   if isWindows() then
+    -- Innerhalb der Anfuehrungszeichen von cmd sind & | < > ^ woertlich;
+    -- gefaehrlich waere nur ein " , und das ist oben ausgeschlossen.
     r.ExecProcess('cmd.exe /c start "" "' .. url .. '"', 0)
   elseif r.GetOS():find('OSX') or r.GetOS():find('macOS') then
-    r.ExecProcess('/usr/bin/open ' .. url, 0)
+    r.ExecProcess('/usr/bin/open ' .. shQuote(url), 0)
   else
-    r.ExecProcess('xdg-open ' .. url, 0)
+    r.ExecProcess('xdg-open ' .. shQuote(url), 0)
   end
+  return true
 end
 
 local function clipboardSet(text)
@@ -1438,8 +1493,14 @@ local function startPairing()
   state.pairingExpiresAt = (r.time_precise() + (resp.expires_in or 900))
   state.lastPoll = 0
   state.screen = 'pairing'
-  -- Auto-open browser
-  if state.verificationUrl then openUrl(state.verificationUrl) end
+  -- Auto-open browser. Geht die Adresse nicht auf (weil sie nicht wie eine
+  -- URL aussieht), ist das kein Sackgassen-Zustand: der Code steht auf dem
+  -- Bildschirm und laesst sich im Portal von Hand eintippen. Gesagt werden
+  -- muss es trotzdem, sonst klickt jemand ins Leere.
+  state.urlBlocked = false
+  if state.verificationUrl and not openUrl(state.verificationUrl) then
+    state.urlBlocked = true
+  end
 end
 
 local function cancelPairing()
@@ -1794,7 +1855,7 @@ end
 function Upd.launch(lines, cfgSuffix)
   local cfgPath = tmpPath(cfgSuffix)
   if not writeFile(cfgPath, table.concat(lines, '\n') .. '\n') then return nil end
-  local ok = r.ExecProcess(curlBinary() .. ' --config "' .. cfgPath .. '"', -1)
+  local ok = r.ExecProcess(curlCfgCmd(cfgPath), -1)
   if not ok then deleteFile(cfgPath); return nil end
   return cfgPath
 end
@@ -2444,7 +2505,7 @@ function AB.download(destPath)
   if not writeFile(cfgPath, table.concat(cfg, '\n')) then
     return false, 'Could not write download config'
   end
-  local raw = r.ExecProcess(curlBinary() .. ' --config "' .. cfgPath .. '"', 305000)
+  local raw = r.ExecProcess(curlCfgCmd(cfgPath), 305000)
   local _, out = parseExecOutput(raw)
   deleteFile(cfgPath)
   local status = tonumber((out or ''):match('__CUEPORT_STATUS__:(%d+)'))
@@ -4226,7 +4287,7 @@ function Art.fetchMissing(items)
   -- painting. Only when that cannot be set up does the old blocking call run.
   if Art.startJob(want, cfgPath) then return 0 end
 
-  local raw = r.ExecProcess(curlBinary() .. ' --config "' .. cfgPath .. '"', 130000)
+  local raw = r.ExecProcess(curlCfgCmd(cfgPath), 130000)
   local _, out = parseExecOutput(raw)
   deleteFile(cfgPath)
   return Art.finish(want, out)
@@ -4275,13 +4336,17 @@ function Art.startJob(want, cfgPath)
   local outPath, donePath = tmpPath('artdl.out'), tmpPath('artdl.done')
   deleteFile(outPath); deleteFile(donePath)
   local shPath = tmpPath('artdl.sh')
+  -- Nur Unix (Windows ist oben schon heraus), also durchgehend einfache
+  -- Anfuehrungszeichen: der Ressourcenpfad kann $, ` oder einen Rueckstrich
+  -- enthalten, und in doppelten waeren die aktiv.
   local body = '#!/bin/sh\n' ..
-               '"' .. curlBinary() .. '" --config "' .. cfgPath .. '" > "' .. outPath .. '" 2>&1\n' ..
-               'echo done > "' .. donePath .. '"\n'
+               shQuote(curlBinary()) .. ' --config ' .. shQuote(cfgPath) ..
+               ' > ' .. shQuote(outPath) .. ' 2>&1\n' ..
+               'echo done > ' .. shQuote(donePath) .. '\n'
   if not writeFile(shPath, body) then return false end
   -- -1: start it and do not wait. The process is REAPER's child and goes away
   -- with it, which is what we want for a download nobody is waiting on.
-  if not r.ExecProcess('/bin/sh "' .. shPath .. '"', -1) then
+  if not r.ExecProcess('/bin/sh ' .. shQuote(shPath), -1) then
     deleteFile(shPath); return false
   end
   local now = r.time_precise()
@@ -7081,7 +7146,13 @@ function UI.about()
   panel('how', 'How it works', function()
     UI.bullet('Pair once. The script asks CuePort for a device code, opens your ' ..
               'browser, and you approve it in the studio portal. The token it gets ' ..
-              'back is kept in Reaper, not in your project.')
+              'back is kept in Reaper, not in your project, so a project file you ' ..
+              'hand to somebody else never carries it.')
+    UI.bullet('Where that token lives: Reaper\'s own settings, as plain text, ' ..
+              'the same place every script keeps its settings -- a script has no ' ..
+              'way to reach the system keychain. It survives restarts on purpose, ' ..
+              'so you pair once and not every session. Log out removes it, and ' ..
+              'that is the thing to do on a machine you share or hand back.')
     UI.bullet('Pick a production per project. The choice is stored in the .rpp, so ' ..
               'each project remembers its own and finds it again on reopen.')
     UI.bullet('Sync pulls every comment on the version you are looking at -- the ' ..
@@ -7733,7 +7804,7 @@ function UI.pairing()
 
     ImGui.Dummy(ctx, 0, 10)
     if state.verificationUrl and ImGui.Button(ctx, 'Reopen browser', 160, K.BTN_H) then
-      openUrl(state.verificationUrl)
+      state.urlBlocked = not openUrl(state.verificationUrl)
     end
     ImGui.SameLine(ctx, 0, 8)
     if ImGui.Button(ctx, 'Cancel', 100, K.BTN_H) then cancelPairing() end
@@ -10780,6 +10851,17 @@ r.atexit(function()
   -- Deliberately *not* the render start marker: that one is the ruler origin
   -- the user set by hand, and it is theirs to keep.
   pcall(Markers.remove)
+  -- Die temporaeren curl-Dateien gehoeren diesem Lauf. Der Cover-Job ist
+  -- der einzige, der laenger lebt als sein Aufruf: er wird losgeloest
+  -- gestartet und liegt beim Beenden womoeglich noch da. Seine
+  -- Konfigurationsdatei traegt den Anmeldekopf, also raeumt sie hier weg,
+  -- statt sie unbegrenzt liegen zu lassen.
+  pcall(function()
+    local job = state.art and state.art.job
+    if not job then return end
+    deleteFile(job.cfg); deleteFile(job.sh)
+    deleteFile(job.out); deleteFile(job.done)
+  end)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════

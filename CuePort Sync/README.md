@@ -543,16 +543,16 @@ related things are grouped into tables rather than kept as loose locals:
 | `UI`   | everything that draws |
 
 Going over the cap is not a subtle failure: Reaper refuses to load the script
-with `too many local variables`. Current usage is 94 of 200 — count the
+with `too many local variables`. Current usage is 111 of 200 — count the
 top-level `local`s yourself rather than trusting that number, it ages.
 
-Seven checks, all quick and all worth running after any edit. They live in the
-development repo — a release goes out through a script that refuses to publish
-unless every one of them is green:
+Twelve checks, all quick and all worth running after any edit. They live in the
+development repo, run on every push there, and a release goes out through a
+script that refuses to publish unless every one of them is green:
 
 ```sh
 luacheck "CuePort Sync/cueport_sync.lua"   # 0 warnings is the baseline
-lua5.4 test/test-ab-lifecycle.lua       # 272 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
+lua5.4 test/test-ab-lifecycle.lua       # 279 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
 lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unreachable, the startup switch, the window after a restart
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
 lua5.4 test/test-ui-balance.lua         # 4411 assertions: every screen leaves ImGui's stacks clean
@@ -563,14 +563,28 @@ lua5.4 test/test-render-probe.lua       # 39 assertions: the render probe reads 
 lua5.4 test/test-peaks-probe.lua        # 25 assertions: the peaks probe, and that it removes the track it needs
 lua5.4 test/test-probe-enums.lua        # 26 assertions: the enum probe writes nothing at all
 lua5.4 test/test-probe-trackmanager.lua # 51 assertions: the track-manager probe cleans up and restores the selection
+lua5.4 test/test-url-safety.lua         # 52 assertions: what reaches the shell, and where the temporary files live
 ```
 
+`test-url-safety.lua` covers the seam where this script talks to the operating
+system. `ExecProcess` hands its line to a real shell rather than an argument
+array, so everything written into one is quoted: the pairing URL has to look
+like an http(s) address before it is opened at all, and is quoted even then;
+paths get single quotes on Unix (where `$`, a backtick and a backslash would
+still be live inside double ones) and double quotes on Windows (where `cmd.exe`
+does not treat single ones as quoting at all). The proof is not a claim about
+strings: the harness hands the line it built to a real `/bin/sh` and checks the
+path arrives character for character. Temporary files live under Reaper's own
+resource path with a per-run random component, so two running Reapers cannot
+overwrite each other's.
+
 One more runs on a platform none of us has. `test/test-windows-curl.lua`
-takes the config-file escaper straight out of the script, checks that all three
-callers use it, and then drives the **real** curl against a **real** config file
-holding a path with a backslash in it. The counterprobe is built in: the
-unescaped path has to fail, otherwise the diagnosis behind it is wrong and the
-rest proves nothing. It runs anywhere, but it is meant for the `windows-curl`
+takes the config-file escaper and the path quoter straight out of the script,
+checks that all three callers use the escaper, and then drives the **real** curl
+against a **real** config file holding a path with a backslash in it, and a
+command line holding a path with a space. The counterprobe is built in: the
+unescaped and the unquoted path both have to fail, otherwise the diagnosis
+behind them is wrong and the rest proves nothing. It runs anywhere, but it is meant for the `windows-curl`
 workflow, which runs it on a Windows machine with the system `curl.exe`.
 
 And one runs **Reaper itself** on that machine. The `windows-reaper` workflow
