@@ -18,8 +18,10 @@ it twice to remove.
 
 ## Features
 
-- **Device-code pairing** with the CuePort studio portal — no passwords in the
-  script, no manual tokens to copy around. Once paired, the badge in the
+- **Code pairing** with the CuePort studio portal — no passwords in the
+  script. You generate a short pairing code in the portal and type it into the
+  plugin; the code is tied to your studio the moment it is made, so there is no
+  separate approval step. Once paired, the badge in the
   header names the **studio** rather than saying `CONNECTED` — which studio this
   device is attached to is the question worth answering before anything is
   uploaded, and a name that is not yours is meant to be noticed.
@@ -345,8 +347,11 @@ used.
 ## Usage
 
 1. Run the action **Script: cueport_sync.lua** (use Reaper's Actions list).
-2. Click **Connect to CuePort** — your browser opens, log in to the studio
-   portal, approve the pairing code.
+2. Open CuePort in your browser, generate a pairing code while logged in to
+   your studio, and type it into the plugin's **Connect** field. The code is
+   tied to your studio the moment it is made, so there is no separate approval
+   step. (The old browser-approval way is still on the same screen as **Classic
+   browser approval**, for a studio whose plugin has not updated yet.)
 3. Pick a production from the list. The choice is stored inside the open
    `.rpp` so the next Reaper launch with that file remembers the binding.
 4. Click **Sync comments**. CuePort markers appear on the ruler.
@@ -546,7 +551,7 @@ Going over the cap is not a subtle failure: Reaper refuses to load the script
 with `too many local variables`. Current usage is 111 of 200 — count the
 top-level `local`s yourself rather than trusting that number, it ages.
 
-Twelve checks, all quick and all worth running after any edit. They live in the
+Fourteen checks, all quick and all worth running after any edit. They live in the
 development repo, run on every push there, and a release goes out through a
 script that refuses to publish unless every one of them is green:
 
@@ -564,6 +569,8 @@ lua5.4 test/test-peaks-probe.lua        # 25 assertions: the peaks probe, and th
 lua5.4 test/test-probe-enums.lua        # 26 assertions: the enum probe writes nothing at all
 lua5.4 test/test-probe-trackmanager.lua # 51 assertions: the track-manager probe cleans up and restores the selection
 lua5.4 test/test-url-safety.lua         # 52 assertions: what reaches the shell, and where the temporary files live
+lua5.4 test/test-windows-curl.lua       # 14 assertions: real curl, a real config file (runs on POSIX too)
+lua5.4 test/test-pairing-claim.lua      # 13 assertions: code pairing — the claim call, token stored, screen, error path
 ```
 
 `test-url-safety.lua` covers the seam where this script talks to the operating

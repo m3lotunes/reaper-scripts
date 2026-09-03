@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.35.0
+-- @version 1.36.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -86,8 +86,11 @@
 
 local K = {}
 
-K.VERSION            = '1.35.0'
+K.VERSION            = '1.36.0'
 K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
+-- Das Portal (nicht die API): dort erzeugt das eingeloggte Studio den
+-- Pairing-Code, den der Producer hier eintippt.
+K.PAIR_URL = 'https://cueport.app/studio/reaper-link.html'
 
 K.EXT_NS                 = 'CuePort'
 K.TRACK_MARKER_EXT_KEY   = 'P_EXT:cueport_track'
@@ -690,6 +693,8 @@ local state = {
   -- clicked in.
   replyTo = nil,
   replyText = '',
+  -- Der eingetippte Pairing-Code (umgekehrter Flow). Jedes Bild uebernommen.
+  pairCode = '',
   -- Set when the box is opened, cleared the frame the field takes the keyboard.
   -- One shot: asking for focus on every frame would take it back the moment the
   -- user clicked anywhere else, including into the field itself.
@@ -837,6 +842,18 @@ end
 local function authHeaders()
   if not state.token then return {} end
   return { ['Authorization'] = 'Bearer ' .. state.token }
+end
+
+-- Das Plugin tauscht den vom Studio erzeugten Code gegen ein Token. Der Code ist
+-- schon beim Erzeugen an das Studio gebunden, es gibt keinen Freigabe-Schritt.
+local function apiPairingClaim(userCode)
+  local status, body, err = httpPOST(state.apiUrl .. '/reaper/pairing/claim', nil,
+    { user_code = userCode, name = 'Reaper' })
+  if not status then return nil, err end
+  local parsed = json.decode(body)
+  if not parsed then return nil, 'Invalid JSON from server' end
+  parsed._http_status = status
+  return parsed
 end
 
 local function apiDeviceStart()
@@ -1477,6 +1494,26 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 -- FLOW CONTROLLERS (kick off async sub-flows; polled via defer loop)
 -- ══════════════════════════════════════════════════════════════════════════════
+
+local function submitPairing()
+  state.errorMsg = nil
+  local code = (state.pairCode or ''):gsub('%s', ''):upper()
+  if #code < 4 then
+    state.errorMsg = 'Enter the pairing code shown in CuePort.'
+    return
+  end
+  local resp, err = apiPairingClaim(code)
+  if err or not resp or not resp.ok or not resp.access_token then
+    state.errorMsg = 'Could not connect: ' .. (err or (resp and resp.error) or 'invalid or expired code')
+    return
+  end
+  saveToken(resp.access_token)
+  state.studioName = resp.studio_name or ''
+  setGlobalExt(K.STUDIO_NAME_KEY, state.studioName)
+  state.pairCode = ''
+  state.screen = 'main'
+  state.productions = nil
+end
 
 local function startPairing()
   state.errorMsg = nil
@@ -7764,13 +7801,27 @@ function UI.login()
   if card.open then
     if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 0) end
     ImGui.Text(ctx,
-      'Connect this Reaper to a CuePort studio to display artist comments ' ..
-      'as project markers with hover tooltips.')
+      'Open CuePort in your browser, generate a pairing code there, and ' ..
+      'enter it below to connect this Reaper to your studio.')
     if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
     ImGui.Dummy(ctx, 0, 10)
-    -- The one action this screen is about, in the shape every other screen
-    -- gives its one action.
-    if UI.primaryButton('Connect to CuePort', 220) then startPairing() end
+    if UI.primaryButton('Open CuePort in browser', 220) then openUrl(K.PAIR_URL) end
+    ImGui.Dummy(ctx, 0, 12)
+    ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
+    ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.textDim)
+    ImGui.Text(ctx, 'PAIRING CODE')
+    ImGui.PopStyleColor(ctx)
+    ImGui.PopFont(ctx)
+    ImGui.SetNextItemWidth(ctx, 220)
+    local _, val = ImGui.InputTextWithHint(ctx, '##cppair', 'XXXX-XXXX', state.pairCode or '')
+    state.pairCode = val
+    ImGui.Dummy(ctx, 0, 10)
+    if UI.primaryButton('Connect', 220) then submitPairing() end
+    -- Uebergangsweise bleibt der klassische Browser-Freigabe-Weg erreichbar,
+    -- solange der Worker beide Wege haelt. Faellt beim Cutover mit den alten
+    -- device/*-Endpunkten wieder weg.
+    ImGui.Dummy(ctx, 0, 8)
+    if UI.primaryButton('Classic browser approval', 220) then startPairing() end
   end
   UI.cardEnd(card)
   UI.errorCard()

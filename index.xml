@@ -36,7 +36,7 @@ Reaper integration for CuePort. The comments on a production, the artist's and t
 \b Setup\b0\par
 1. Install this package via ReaPack.\par
 2. Open the Reaper Actions list and run \b cueport_sync.lua\b0 .\par
-3. Click \b Connect to CuePort\b0  and approve in the browser.\par
+3. Open CuePort in your browser, generate a pairing code, and type it into the plugin.\par
 4. Pick a production and bind it to the open .rpp.\par
 5. Click \b Sync comments\b0 . Done.\par
 \par
@@ -47,25 +47,17 @@ MIT licensed. The full text, the third-party notices and a list of everything th
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="1.35.0" author="CuePort" time="2026-09-01T22:39:58Z">
+      <version name="1.36.0" author="CuePort" time="2026-09-03T16:41:53Z">
         <changelog><![CDATA[
-CuePort Sync 1.35.0
+CuePort Sync 1.36.0
 
 Only one version is listed here, and it is the one that is really on the server. Older builds are not kept, so listing them would offer downloads that cannot be delivered.
 
-FIXED
+CHANGED
 
-Two copies of Reaper running at once no longer fight over the script's temporary files. Those files used to carry a fixed name, so a request made in one Reaper could land in the other one's file. Each run now has its own.
+Pairing works the other way around now. Instead of the plugin opening a browser for you to approve, you open CuePort, generate a pairing code there while logged in to your studio, and type that code into the plugin. The code is tied to your studio the moment it is made, so there is no separate approval step. The login screen has an Open CuePort in browser button, a field for the code, and Connect.
 
-Those files also moved out of the shared /tmp directory into Reaper's own resource path, next to the rest of your Reaper settings.
-
-A cover download that was still running when Reaper quit used to leave its files behind. They are cleaned up now.
-
-TIGHTENED
-
-Everything the script hands to the command line is quoted, on both platforms: single quotes on macOS and Linux, double ones on Windows, where cmd.exe does not treat single ones as quoting at all. A resource path with a space or an unusual character in it now survives the trip intact. The pairing URL is checked before the browser is opened with it, and the page says so if it was refused.
-
-The About page now says where your device token is kept: in Reaper's own settings, as plain text, the same place every script keeps its settings. A script has no way to reach the system keychain. It survives restarts on purpose, so you pair once and not every session. Log out removes it, and that is the thing to do on a machine you share or hand back.
+The old browser-approval way is still on the same screen as Classic browser approval, so a plugin that has not updated yet keeps pairing. It goes away later.
 
 WHAT THE SCRIPT DOES
 
