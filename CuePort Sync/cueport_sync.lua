@@ -34,7 +34,8 @@
 --   "CuePort A-B" next to the .rpp; the bound production and a cache of its
 --   comments in the project's extension data; and the edit cursor when you
 --   click the waveform. Marker sync, render start and removing the A/B track
---   are named undo steps. Nothing from your project is ever uploaded.
+--   are named undo steps. Your project itself never leaves the machine; the
+--   only audio that does is a render you upload yourself.
 --   The same list, in full, is on the script's About screen.
 --
 --   ## Licence
