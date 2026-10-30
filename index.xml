@@ -14,7 +14,7 @@ Reaper integration for CuePort. The comments on a production, the artist's and t
 - Device-code pairing with the CuePort studio portal, no passwords in the script\par
 - Production picker grouped by artist, with cover art and an inline search\par
 - Waveform of the active version with the comments pinned on it, click or drag to move the DAW cursor\par
-- Comment list beside it: the whole thread, artist and studio, replies indented\par
+- Comment list beside it or below the production: the whole thread, artist and studio, replies indented\par
 - Amber for the artist, purple for the studio, on the pins and on the timestamps\par
 - Reply to a comment from the DAW, and delete a reply you sent\par
 - Project markers for the comments, optional, and a render start marker of your own\par
@@ -47,23 +47,27 @@ MIT licensed. The full text, the third-party notices and a list of everything th
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="1.36.0" author="CuePort" time="2026-09-03T16:41:53Z">
+      <version name="1.37.0" author="CuePort" time="2026-10-30T15:10:05Z">
         <changelog><![CDATA[
-CuePort Sync 1.36.0
+CuePort Sync 1.37.0
 
 Only one version is listed here, and it is the one that is really on the server. Older builds are not kept, so listing them would offer downloads that cannot be delivered.
 
-CHANGED
+NEW
 
-Pairing works the other way around now. Instead of the plugin opening a browser for you to approve, you open CuePort, generate a pairing code there while logged in to your studio, and type that code into the plugin. The code is tied to your studio the moment it is made, so there is no separate approval step. The login screen has an Open CuePort in browser button, a field for the code, and Connect.
+The comment list can sit under the production instead of beside the waveform. Choose Beside or Below in Settings, Window, Comment list position, or click the small layout switch in the corner of the COMMENTS heading to move it to the other place in one go. The choice is remembered.
 
-The old browser-approval way is still on the same screen as Classic browser approval, so a plugin that has not updated yet keeps pairing. It goes away later.
+Below, the list takes the full width of the window, so it stays on screen in a narrow window or docker where the column beside the waveform has to step aside. It grows with its comments up to a set height and then scrolls inside itself, so the render start card stays in reach. Hovering and clicking work the same in both places: a comment lights its pin, a pin lights and scrolls to its comment, and a click moves the edit cursor there.
+
+SINCE 1.36.0
+
+Pairing works with a code: open CuePort, generate a pairing code there while logged in to your studio, and type it into the plugin. The classic browser approval is still on the login screen for now.
 
 WHAT THE SCRIPT DOES
 
 Comments on a production, the artist's and the studio's, threads and all, are pulled into your project as native markers and drawn on a waveform inside the window. Pins and timestamps are colored by who wrote them. You can answer from the DAW and delete your own replies again.
 
-Switch between everything the studio has uploaded: instrumental or mix, and every version of either. A/B the selected version against your own mix through a hidden reference track that plays past the master, so the comparison is fair. Cover art is shown in the picker and in the production header.
+Switch between everything the studio has uploaded: instrumental or mix, and every version of either. A/B the selected version against your own mix through a hidden reference track that plays past the master, so the comparison is fair. Cover art is shown in the picker and in the production header. Render straight from Reaper and send the result back as a new version.
 
 The script keeps itself up to date: a 200 byte check once a day, one button, and a restart into the new build. It works whether the copy was installed through ReaPack or by hand.
 

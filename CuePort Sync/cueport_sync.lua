@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.36.0
+-- @version 1.37.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -87,7 +87,7 @@
 
 local K = {}
 
-K.VERSION            = '1.36.0'
+K.VERSION            = '1.37.0'
 K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 -- Das Portal (nicht die API): dort erzeugt das eingeloggte Studio den
 -- Pairing-Code, den der Producer hier eintippt.
@@ -733,6 +733,9 @@ local state = {
   -- the strip before drawing the list) would mean laying the waveform out
   -- twice.
   commentsOpen = false,
+  -- 'left' or 'below'. Below, the list comes AFTER the waveform in the frame,
+  -- so there the row-to-pin direction is the one that runs a frame behind.
+  commentsPos = 'left',
   hoverCommentId = nil,
   -- And the other way round: which row the mouse is over in the list, so the
   -- pin out on the strip can light up with it. This one is NOT a frame behind
@@ -811,6 +814,7 @@ local function loadState()
   -- Remembered across sessions: reopening the window should not silently undo
   -- a choice about how the screen is laid out.
   state.commentsOpen = getGlobalExt(K.COMMENTS_OPEN_KEY) == '1'
+  state.commentsPos  = (getGlobalExt(K.COMMENTS_POS_KEY) == 'below') and 'below' or 'left'
   state.token = getGlobalExt('token')
   if state.token == '' or state.token == nil then
     local legacy = getGlobalExt('token_prod')
@@ -1114,6 +1118,9 @@ K.WAVEFORM_CACHE_KEY = 'waveform_cache'
 -- Whether the comment list is open. Global, not per project: it is a way of
 -- working, not a property of one .rpp.
 K.COMMENTS_OPEN_KEY  = 'comments_open'
+-- Where it is open: 'left' (a column beside the player) or 'below' (under the
+-- production card). Unset means 'left', which is where it always was.
+K.COMMENTS_POS_KEY   = 'comments_pos'
 -- Two more ways of working, global for the same reason. Both default to ON when
 -- the key has never been written: the markers on the ruler are what this script
 -- was for in the first place, and a fresh install must behave as it always did.
@@ -1157,6 +1164,14 @@ K.COMMENT_LIST_W     = 210
 -- Below this the list would leave the waveform too narrow to aim at, so it
 -- steps aside instead. Measured against the body, not the window.
 K.COMMENTS_MIN_ROOM  = 520
+-- The other place the list can live: under the production card, full width.
+-- It grows with its comments up to this height and scrolls inside itself past
+-- it, so a long conversation does not push the render-start card off screen.
+K.COMMENTS_BELOW_MIN_H = 90
+K.COMMENTS_BELOW_MAX_H = 320
+-- The placement switch in the corner of the COMMENTS heading.
+K.CMT_POS_W = 22
+K.CMT_POS_H = 16
 
 -- Metrics ride along in the same cache entry rather than in one of their own:
 -- they belong to exactly the same version as the peaks, so a second store
@@ -6090,12 +6105,12 @@ end
 -- once made the comment column the single bright panel on the screen. Over the
 -- full height rather than the window's top 55%, because a region this tall
 -- would otherwise stop washing halfway down and read as two surfaces.
-function UI.wellBegin(id, w, h)
+function UI.wellBegin(id, w, h, extraFlags)
   ImGui.PushStyleColor(ctx, ImGui.Col_ChildBg(), CP_COLORS.listBase)
   ImGui.PushStyleColor(ctx, ImGui.Col_Border(),  CP_COLORS.cardBorder)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_ChildRounding(), 8)
   ImGui.PushStyleVar(ctx, ImGui.StyleVar_WindowPadding(), 10, 9)
-  local f = 0
+  local f = extraFlags or 0
   if ImGui.ChildFlags_Borders    then f = f | ImGui.ChildFlags_Borders()
   elseif ImGui.ChildFlags_Border then f = f | ImGui.ChildFlags_Border() end
   local card = { open = ImGui.BeginChild(ctx, id, w, h, f) }
@@ -6130,6 +6145,23 @@ end
 function UI.showingPicker()
   return (not state.boundProductionId) or state.showPickerOverride
       or (not state.boundProduction) or false
+end
+
+-- Where the comment list goes this frame: 'left', 'below' or nil. Asked once,
+-- by the loop before the body, and kept in state.cmtPlace for UI.bound -- so
+-- the column and the list under the card can never both be drawn.
+--
+-- The list belongs to the production screen and to nothing else. Beside the
+-- player it needs `roomHere` >= K.COMMENTS_MIN_ROOM and steps aside below that;
+-- under the card it has the full width, so it needs no room check at all.
+function UI.commentsPlace(roomHere)
+  if not (state.commentsOpen and state.boundProductionId
+          and state.screen == 'main' and not UI.showingPicker()) then
+    return nil
+  end
+  if state.commentsPos == 'below' then return 'below' end
+  if roomHere and roomHere >= K.COMMENTS_MIN_ROOM then return 'left' end
+  return nil
 end
 
 -- One name for a comment, used by both the list and the strip. Cached rows
@@ -6338,11 +6370,78 @@ function UI.flushDelete()
   state.syncRequested = true
 end
 
-function UI.commentList(w, h)
+-- The switch in the corner of the COMMENTS heading: moves the list to the other
+-- place. The icon shows where it would GO -- a panel along the bottom, or a
+-- column down the left -- the way an editor's layout buttons do. Drawn rather
+-- than typed: the bundled font is a subset, and an arrow glyph that is not in
+-- it would be an empty box. Same setting as the row in Settings, which stays:
+-- beside a narrow window the column steps aside, and with it this switch.
+--
+-- Cursor saved and put back, then the caller submits an item (the Dummy after
+-- the heading), so nothing is left "extending" the window.
+function UI.commentPosSwitch(x, y, below)
+  local w, h = K.CMT_POS_W, K.CMT_POS_H
+  local cx, cy = ImGui.GetCursorScreenPos(ctx)
+  ImGui.SetCursorScreenPos(ctx, x, y)
+  local hit = ImGui.InvisibleButton(ctx, '##cpcmtpos', w, h)
+  local hov = ImGui.IsItemHovered(ctx)
+  ImGui.SetCursorScreenPos(ctx, cx, cy)
+  local dl  = ImGui.GetWindowDrawList(ctx)
+  if hov then
+    ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, CP_COLORS.card, 4)
+    if ImGui.SetTooltip then
+      ImGui.SetTooltip(ctx, below and 'Move the comments beside the waveform'
+                                  or 'Move the comments below the production')
+    end
+  end
+  local col = hov and CP_COLORS.text or CP_COLORS.textDim
+  -- A 14 x 10 frame in the middle of the hit area, and the panel it would
+  -- become filled in. Whole pixels: these are 1 px shapes and a half-pixel
+  -- edge would blur.
+  local fx = math.floor(x + (w - 14) / 2)
+  local fy = math.floor(y + (h - 10) / 2)
+  ImGui.DrawList_AddRect(dl, fx, fy, fx + 14, fy + 10, col, 2)
+  if below then
+    ImGui.DrawList_AddRectFilled(dl, fx + 1, fy + 1, fx + 5, fy + 9, col, 1)
+  else
+    ImGui.DrawList_AddRectFilled(dl, fx + 1, fy + 6, fx + 13, fy + 9, col, 1)
+  end
+  if hit then
+    state.commentsPos = below and 'left' or 'below'
+    setGlobalExt(K.COMMENTS_POS_KEY, state.commentsPos)
+  end
+end
+
+-- `below`: drawn under the production card instead of beside it. There the
+-- list sizes itself to its comments between K.COMMENTS_BELOW_MIN_H and
+-- K.COMMENTS_BELOW_MAX_H and scrolls past that. Sizing to its own content is
+-- safe inside the auto-resizing body; height 0 ("the rest of the region") is
+-- not, because that region grows with the child and the two would feed each
+-- other. A build without the flag gets the fixed maximum.
+function UI.commentList(w, h, below)
   local comments = loadCommentsCache()
   local threads  = UI.commentThreads(comments)
-  local card = UI.wellBegin('cpcomments', w, h)
+  -- Under the card the list is laid out AFTER the waveform, so whatever the
+  -- loop cleared before the body was already read by the strip; start clean
+  -- here and let this frame's rows answer. The strip sees it next frame.
+  state.hoverRowCommentId = nil
+  local flags = 0
+  if below then
+    if ImGui.ChildFlags_AutoResizeY and ImGui.SetNextWindowSizeConstraints then
+      flags = ImGui.ChildFlags_AutoResizeY()
+      ImGui.SetNextWindowSizeConstraints(ctx, 0, K.COMMENTS_BELOW_MIN_H,
+                                         4096, K.COMMENTS_BELOW_MAX_H)
+      h = 0
+    else
+      h = K.COMMENTS_BELOW_MAX_H
+    end
+  end
+  local card = UI.wellBegin('cpcomments', w, h, flags)
   if card.open then
+    -- Where the heading line starts and how wide it is, for the placement
+    -- switch in its right-hand corner (drawn after the heading, below).
+    local hx, hy = ImGui.GetCursorScreenPos(ctx)
+    local hAvail = ImGui.GetContentRegionAvail(ctx) or 0
     ImGui.PushFont(ctx, FONT_BOLD, K.FONT_SMALL)
     ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.sectionText)
     ImGui.Text(ctx, 'COMMENTS')
@@ -6356,7 +6455,7 @@ function UI.commentList(w, h)
     if statusNow then
       ImGui.SameLine(ctx, 0, 8)
       local sx, sy = ImGui.GetCursorScreenPos(ctx)
-      local room   = ImGui.GetContentRegionAvail(ctx)
+      local room   = ImGui.GetContentRegionAvail(ctx) - K.CMT_POS_W - 6
       ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
       local dl = ImGui.GetWindowDrawList(ctx)
       if ImGui.DrawList_PushClipRect then
@@ -6367,6 +6466,7 @@ function UI.commentList(w, h)
       ImGui.PopFont(ctx)
       ImGui.NewLine(ctx)
     end
+    UI.commentPosSwitch(hx + hAvail - K.CMT_POS_W, hy - 1, below)
     ImGui.Dummy(ctx, 0, 4)
 
     if #threads == 0 then
@@ -6929,14 +7029,33 @@ function UI.settings()
     -- this is a choice about the layout that stays put once it is made.
     local clHit, clVal
     UI.row('Comment list',
-           'A column beside the waveform listing every comment on the version. ' ..
-           'Hovering a pin lights its comment; clicking a comment moves the ' ..
-           'cursor to its pin. It needs the room, so a narrow window leaves it out.',
+           'A list of every comment on the version. Hovering a pin lights its ' ..
+           'comment; clicking a comment moves the cursor to its pin.',
            32, function() clHit, clVal = UI.toggle('##commentlist', state.commentsOpen) end,
            nil, K.TOGGLE_H)
     if clHit then
       state.commentsOpen = clVal
       setGlobalExt(K.COMMENTS_OPEN_KEY, clVal and '1' or '0')
+    end
+
+    UI.rowSep()
+
+    -- Where the list goes. Offered whether or not the list is on: choosing the
+    -- place first and switching it on second is a perfectly good order.
+    local posLabels = { 'Beside', 'Below' }
+    local posW      = UI.segmentedMinW(posLabels)
+    local posPick
+    UI.row('Comment list position',
+           'Beside: a column next to the waveform. It needs the room, so a ' ..
+           'narrow window leaves it out. Below: under the production, full ' ..
+           'width, so it fits any window and docker.',
+           posW, function()
+             posPick = UI.segmented('##commentpos', posLabels,
+                                    state.commentsPos == 'below' and 2 or 1, posW)
+           end, nil, 28)
+    if posPick then
+      state.commentsPos = (posPick == 2) and 'below' or 'left'
+      setGlobalExt(K.COMMENTS_POS_KEY, state.commentsPos)
     end
   end)
 
@@ -8926,6 +9045,19 @@ function UI.bound()
     UI.abCompare()
   UI.cardEnd(card)
 
+  -- The comment list, when Settings put it here rather than beside the player.
+  -- Its own heading is inside the well, so only the gap a section would leave.
+  -- Measured for the height floor: the list scrolls in itself, and its height
+  -- must not decide how small the window may get -- otherwise moving it here
+  -- would stretch the window, which a layout choice has no business doing.
+  if state.cmtPlace == 'below' then
+    ImGui.Dummy(ctx, 0, 8)
+    local _, y0 = ImGui.GetCursorScreenPos(ctx)
+    UI.commentList(0, 0, true)
+    local _, y1 = ImGui.GetCursorScreenPos(ctx)
+    state.cmtBelowHNow = math.max(0, (y1 or 0) - (y0 or 0)) + 8
+  end
+
   -- ── Render-start anchor section ─────────────────────────────────────────
   -- Lets the user tell Reaper where the render starts (== ruler 0:00) so
   -- that comment timestamps land at the correct ruler positions.
@@ -10786,15 +10918,21 @@ local function loop()
         -- None of this changes the size of the window. The width floor is a
         -- constant and the height floor is only ever built from the production
         -- screen, so the column stepping aside costs no pixels either way.
-        local wantList = state.commentsOpen and state.boundProductionId
-          and state.screen == 'main' and not UI.showingPicker()
-          and roomHere and roomHere >= K.COMMENTS_MIN_ROOM
+        -- Decided once per frame and kept: UI.bound reads this rather than
+        -- asking again. The switch in the list's heading changes the setting
+        -- mid-frame, and asking twice would then draw the list in BOTH
+        -- places in that one frame -- the second copy's switch firing on the
+        -- same click and sending it straight back.
+        local place = UI.commentsPlace(roomHere)
+        state.cmtPlace = place
         -- Cleared here, before the list gets its turn to answer. If it is not
         -- drawn at all -- switched off, or the window too narrow -- nothing
         -- would ever clear it, and a pin would stay lit from the last time the
-        -- column was open.
-        state.hoverRowCommentId = nil
-        if wantList then
+        -- column was open. Not when the list sits under the card: it is drawn
+        -- after the strip there, clears the value itself and answers for the
+        -- next frame, and clearing it here would mean the strip never sees it.
+        if place ~= 'below' then state.hoverRowCommentId = nil end
+        if place == 'left' then
           -- Height 0 = fill the region, so the list is as tall as the body and
           -- scrolls inside itself instead of stretching the window.
           UI.commentList(K.COMMENT_LIST_W, 0)
@@ -10856,14 +10994,24 @@ local function loop()
           -- went straight into the floor: the window grew on the way back
           -- rather than on the way in. Measure only once the same screen has
           -- been up for two frames; one frame of lag is not visible.
+          --
+          -- A list under the card is taken back out of the measurement: it
+          -- scrolls in itself, so it must not raise the floor. Its height from
+          -- the PREVIOUS frame, because that is the frame `bh` describes; and
+          -- where the list sits is part of the key, so the frame a switch
+          -- lands on is skipped like any other change of layout.
           local floorKey = tostring(state.screen) ..
-                           (state.pickerShowing and '+picker' or '')
+                           (state.pickerShowing and '+picker' or '') ..
+                           (state.cmtBelowHNow and '+below' or '')
           if ImGui.GetWindowSize and state.screen == 'main'
              and not state.pickerShowing and floorKey == state.prevFloorKey then
             local _, bh = ImGui.GetWindowSize(ctx)
-            if bh and bh > 0 then state.bodyHeight = bh end
+            if bh and bh > 0 then
+              state.bodyHeight = bh - (state.cmtBelowHLast or 0)
+            end
           end
           state.prevFloorKey = floorKey
+          state.cmtBelowHLast, state.cmtBelowHNow = state.cmtBelowHNow, nil
           ImGui.EndChild(ctx)
         end
         ImGui.Unindent(ctx, K.WINDOW_PAD_X)

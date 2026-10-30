@@ -99,8 +99,8 @@ it twice to remove.
   drag the strip to move the DAW cursor (and seek playback) to that spot, and
   use the built-in Play/Pause + Stop buttons. Falls back gracefully when no
   waveform or track length is stored for the version yet.
-- **Comment list** in a column of its own on the left, switched on in
-  **Settings → Window** and remembered across sessions. It shows the whole
+- **Comment list** in a column of its own on the left (or under the
+  production, see below), switched on in **Settings → Window** and remembered across sessions. It shows the whole
   conversation: the artist's remarks, the studio's, and every reply indented
   under the comment it answers with a note of which side wrote it. (Up to
   v1.28.0 the script was handed the artist's opening remarks only — studio
@@ -128,6 +128,19 @@ it twice to remove.
   not touched. It belongs to the production screen and shows up nowhere else:
   Settings, About and the picker are not about a track, so it steps aside there
   as well. None of it changes the size of the window.
+
+  **Beside or below.** The list can also sit **under the production card**,
+  full width, instead of in the column. Chosen in **Settings → Window →
+  Comment list position**, or with the small layout switch in the corner of
+  the COMMENTS heading, which moves it to the other place in one click; both
+  are the same remembered setting. Below, it needs no room beside the
+  waveform, so it stays on screen in a narrow window or docker where the
+  column would step aside. It grows with its comments up to a set height and
+  scrolls inside itself past that, so a long conversation does not push the
+  render-start card out of reach, and moving it does not change the size the
+  window may shrink to. Hover and click work the same in both places: a row
+  lights its pin, a pin lights and scrolls to its row, a click moves the
+  cursor.
 - **Reply from the DAW.** Hover a comment, press **Reply** in its top-right
   corner and the caret is already in the box; type, send. It
   arrives in CuePort as an ordinary threaded reply — same shape both portals
@@ -560,8 +573,8 @@ luacheck "CuePort Sync/cueport_sync.lua"   # 0 warnings is the baseline
 lua5.4 test/test-ab-lifecycle.lua       # 279 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
 lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unreachable, the startup switch, the window after a restart
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
-lua5.4 test/test-ui-balance.lua         # 4411 assertions: every screen leaves ImGui's stacks clean
-lua5.4 test/test-narrow.lua             # 48 assertions: nothing is wider than the window
+lua5.4 test/test-ui-balance.lua         # 4551 assertions: every screen leaves ImGui's stacks clean
+lua5.4 test/test-narrow.lua             # 52 assertions: nothing is wider than the window
 lua5.4 test/test-update.lua             # 119 assertions: version compare, the three pre-replace checks, both install routes, restart
 lua5.4 test/test-render.lua             # 180 assertions: the render pass, the settings borrowed and put back, the upload page
 lua5.4 test/test-render-probe.lua       # 39 assertions: the render probe reads without changing anything
