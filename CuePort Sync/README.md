@@ -42,12 +42,16 @@ it twice to remove.
   project rate, stereo — that is the file CuePort wants, and the same one the
   studio portal makes out of a WAV. **Your render settings are borrowed, not
   taken:** all twenty-one fields are written down first and put back straight
-  afterwards, whether the render worked or not. If REAPER should die in the
+  afterwards, whether the render worked or not. REAPER's render window closes
+  by itself when the render is done. If REAPER should die in the
   middle of one, the next start puts them back — into that project and no other.
   With **Time selection** the script measures rather than asks: a selection that
   is not there is stated as a fact instead of being a dialog you learn to click
-  away, and one that does not start at 0:00 offers to move the ruler with it,
-  because otherwise every comment lands quietly askew by the offset.
+  away. Where the render begins in the project goes up with the file, so the
+  comments on that version land on the right spot in your project no matter
+  where your ruler's 0:00 is. Render and send as often as you like in a row:
+  each fresh render can be sent, and FLAC goes up at 24 bit whatever the
+  computer's FLAC default is.
   Afterwards the file itself is checked, not the settings — a mono plugin at the
   end of the master chain makes a mono file without any setting saying so. The
   waveform and the length go up with it, so the artist gets a player with
@@ -74,15 +78,32 @@ it twice to remove.
   at a glance. Your own markers stay untouched. They exist while the script
   does: quitting takes them back off the ruler, and starting it again on a
   bound project puts them straight back — the comments they are made from are
-  cached in the project itself, so that costs no request. The render start
-  marker is left alone, since that one is the ruler origin you set by hand.
+  cached in the project itself, so that costs no request.
 
   Both are optional. **Settings → Project markers** switches the comment markers
   off if you would rather keep the ruler to yourself — the pins on the waveform
   and the comment list still show every comment, because they read from the
-  project rather than from the ruler. The render start marker has its own switch
-  and is on by default; with it off, Set and Clear go on working exactly as
-  before and the marker returns the moment you switch it back.
+  project rather than from the ruler. The `CP: Render start` marker, which
+  only shows where the open version begins, has its own switch and is on by
+  default; turning it off changes nothing about where comments land.
+- **Where a version starts** — every version remembers where it begins in your
+  project, measured from the start of the timeline and stored in CuePort. A
+  render sent from the script brings it along (the timeline start for **Entire
+  project**, the start of the selection for **Time selection**). For a version
+  uploaded in the browser, put the edit cursor where its audio begins and press
+  **Set to edit cursor** once; everyone working on that production gets it.
+  Comment markers, the A/B reference and clicks on a comment all go from there.
+  A start that is known can only be cleared, not moved by accident: the row
+  shows where it sits on your ruler and offers **Clear**, and **Set to edit
+  cursor** comes back after that. After an upload the script opens the new
+  version straight away, however you leave the upload page.
+- **Ruler 0:00 at the version start** — the ruler's 0:00 moves to where the
+  open version begins, so a comment at 1:23 in CuePort sits at 1:23 on your
+  ruler. Your own Project start time is kept in the project and comes back
+  when you turn this off in Settings, when you log out, and while a version
+  without a known start is open. A Project start time after the start of the
+  timeline (a film template at 1:00:00) is left alone, because REAPER offers
+  no way to give it back. Each move is one undo step.
 - **Hover tooltip** shows the author + timestamp + full comment text when you
   move the mouse near a marker.
 - **Waveform** in the main window, always open and inside the production card
@@ -319,16 +340,13 @@ it twice to remove.
   to its own content is handed the size worked out from the frame before, so
   that first frame still carries the height of the page you just left.
 - **Picking a production syncs it** right away, so the player holds its current
-  version without pressing Sync first. Until a render start is set, the button
-  that sets it pulses — without it the comment timestamps cannot land in the
-  right place. "Set" means *CuePort's own marker is on the ruler*, not "Reaper
-  reports some offset": a project template can carry an offset nobody asked
-  for. Once it is down, a green check appears beside the label and the button
-  stops pulsing; the offset itself is behind the "?" next to it, rather than as
-  a permanent line of status under the card.
-  Neither button touches the network: moving the ruler origin re-places
-  the comment markers, and the comments for that are already cached in the
-  project, so it is local work.
+  version without pressing Sync first. Until the version's start is known, the
+  button that sets it pulses. Once it is, a green check appears beside the
+  label and the button stops pulsing; the position itself is behind the "?"
+  next to it.
+  Setting or clearing the start re-places the comment markers from the
+  comments already cached in the project, and sends the one number to CuePort
+  so the next person on that production gets it too.
   (Until v1.10.2 both re-fetched the whole comment list from the server
   mid-click — the wait people noticed. v1.10.2 still did it for productions
   with *no* comments, because an empty list was read as "never synced".) Only
@@ -373,9 +391,9 @@ used.
 
 ## Timing note
 
-The rendered mix must start at **0:00** on the Reaper timeline so the marker
-timestamps line up with the audio. (A configurable anchor is planned for a
-later version.)
+Each version knows where it begins in the project (see *Where a version
+starts*), and the ruler's 0:00 follows it unless you turn that off. Without
+a known start, its comments are placed from 0:00 on your ruler, as before.
 
 ## Settings
 
@@ -406,10 +424,12 @@ Logging out and quitting are in the menu, not on this screen.
 - **Project markers** — what the script is allowed to put on your ruler.
   **Comment markers** turns the one-marker-per-comment set on and off; with it
   off nothing else changes, the waveform pins and the comment list still carry
-  every comment. **Render start marker** hides just that marker, leaving the
-  ruler origin exactly where it is. Both take effect on the spot and neither
-  costs a request: switching back on rebuilds from what is already stored in
-  the project.
+  every comment. **Render start marker** hides just the marker that shows where
+  the version begins; nothing moves. **Ruler 0:00 at version start** moves
+  your ruler's 0:00 to the start of the open version (on by default); turned
+  off, your own Project start time comes back. All three take effect on the
+  spot and none costs a request: switching back on rebuilds from what is
+  already stored in the project.
 - **Quick access** — toggle the floating pill and, with JS_ReaScriptAPI
   installed, attach it straight to the transport.
 - **Diagnostics** — the version, the instance id and the raw docking reading
@@ -570,13 +590,13 @@ script that refuses to publish unless every one of them is green:
 
 ```sh
 luacheck "CuePort Sync/cueport_sync.lua"   # 0 warnings is the baseline
-lua5.4 test/test-ab-lifecycle.lua       # 279 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
+lua5.4 test/test-ab-lifecycle.lua       # 325 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
 lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unreachable, the startup switch, the window after a restart
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
-lua5.4 test/test-ui-balance.lua         # 4551 assertions: every screen leaves ImGui's stacks clean
+lua5.4 test/test-ui-balance.lua         # 4585 assertions: every screen leaves ImGui's stacks clean
 lua5.4 test/test-narrow.lua             # 52 assertions: nothing is wider than the window
 lua5.4 test/test-update.lua             # 119 assertions: version compare, the three pre-replace checks, both install routes, restart
-lua5.4 test/test-render.lua             # 180 assertions: the render pass, the settings borrowed and put back, the upload page
+lua5.4 test/test-render.lua             # 204 assertions: the render pass, the settings borrowed and put back, the upload page
 lua5.4 test/test-render-probe.lua       # 39 assertions: the render probe reads without changing anything
 lua5.4 test/test-peaks-probe.lua        # 25 assertions: the peaks probe, and that it removes the track it needs
 lua5.4 test/test-probe-enums.lua        # 26 assertions: the enum probe writes nothing at all
@@ -664,8 +684,8 @@ touched. The same list is on the script's own **About** screen.
 | What | When |
 |---|---|
 | Project markers `CP @author: time`, one per comment thread | **Sync comments** — the previous set is removed and the current one written, so switching version replaces them with that version's; nothing at all if you switched them off in Settings |
-| A marker `CP: Render start` | **Set render start**, unless you switched that marker off in Settings; clearing it takes it away |
-| The project time offset | **Set render start** and **Clear** — this one happens either way, the switch above only hides the marker |
+| A marker `CP: Render start` where the open version begins | on sync, only when the version's start is known, unless you switched it off in Settings |
+| The project time offset (your ruler's 0:00) | set to the open version's start when it is known, unless you switched **Ruler 0:00 at version start** off; your own value is kept in the project's extension data and put back when you switch it off, log out or open a version without a known start. One undo step each time |
 | A track `CuePort A/B`, hidden from the track panel and mixer, with one item and a hardware-output send | while the A/B reference is loaded |
 | One audio file in a folder `CuePort A-B` next to the `.rpp` | same; removed once the project has been saved without the reference in it |
 | The bound production, which version of it you are looking at, and a cache of that version's comments and waveform, in the project's extension data | on binding, on switching version and on sync — this marks the project modified |
@@ -674,7 +694,7 @@ touched. The same list is on the script's own **About** screen.
 | One audio file `cueport_render_...` beside the `.rpp` | for each render sent to CuePort; it stays unless you turn **Keep the render** off, and the A/B cleanup does not touch it |
 | One empty track, for a fraction of a second | to read the waveform off the finished render — there is no way to read peaks from a file that is not in the project; it is removed again in the same undo step |
 
-Syncing markers, setting or clearing the render start, reading the waveform and
+Syncing markers, reading the waveform and
 removing the A/B track are named undo steps. Inserting the A/B track is not — use **Remove**
 rather than Undo for that one.
 

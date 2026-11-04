@@ -17,7 +17,8 @@ Reaper integration for CuePort. The comments on a production, the artist's and t
 - Comment list beside it or below the production: the whole thread, artist and studio, replies indented\par
 - Amber for the artist, purple for the studio, on the pins and on the timestamps\par
 - Reply to a comment from the DAW, and delete a reply you sent\par
-- Project markers for the comments, optional, and a render start marker of your own\par
+- Project markers for the comments, optional, and a marker where the open version begins\par
+- Every version remembers where it begins in the project, and the ruler's 0:00 follows it\par
 - A/B compare against the uploaded version, routed past the master so the finished bounce stays uncolored\par
 - Render straight from Reaper and send it back as a new version, without the browser\par
 - The render settings are borrowed for the one pass and put back byte for byte afterwards\par
@@ -41,27 +42,63 @@ Reaper integration for CuePort. The comments on a production, the artist's and t
 5. Click \b Sync comments\b0 . Done.\par
 \par
 \b Time alignment\b0\par
-Comments are placed relative to the start of the rendered audio. Use the in-app Set render start button to align the ruler to your mix start.\par
+Every version remembers where it begins in your project, stored in CuePort. A render sent from the script brings it along; for a version uploaded in the browser, set it once from the edit cursor. The ruler's 0:00 follows the open version, so CuePort's comment times are your ruler's times; turn that off in Settings and your own Project start time comes back.\par
 \par
 MIT licensed. The full text, the third-party notices and a list of everything the script touches in your project are on the About screen in the script itself.\par
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="1.37.0" author="CuePort" time="2026-10-30T15:10:05Z">
+      <version name="1.38.0" author="CuePort" time="2026-11-04T22:56:07Z">
         <changelog><![CDATA[
-CuePort Sync 1.37.0
+CuePort Sync 1.38.0
 
 Only one version is listed here, and it is the one that is really on the server. Older builds are not kept, so listing them would offer downloads that cannot be delivered.
 
-NEW
+WHAT CHANGED
 
-The comment list can sit under the production instead of beside the waveform. Choose Beside or Below in Settings, Window, Comment list position, or click the small layout switch in the corner of the COMMENTS heading to move it to the other place in one go. The choice is remembered.
+1. Every version remembers where it begins in your project.
+Until now the script placed every comment marker and the A/B reference from the 0:00 of your ruler, one number for the whole project. Two versions rendered over different ranges (one over the entire project, one over a time selection) could never both be right, and a render over the entire project put your own 0:00 back to the start of the timeline. Now the start belongs to each version and is stored in CuePort, so everyone working on that production gets it.
+- A render sent from the script brings its start along: the start of the timeline for Entire project, the start of the selection for Time selection.
+- Comment markers, the A/B reference, the render start marker and a click on a comment are all placed from the start of the version that is open.
+- For a version uploaded in the browser, put the edit cursor where its audio begins and press Set to edit cursor once, in the card Where this version starts.
+- A version without a known start is placed from the 0:00 of your ruler, exactly as before, so nothing that worked before moves.
 
-Below, the list takes the full width of the window, so it stays on screen in a narrow window or docker where the column beside the waveform has to step aside. It grows with its comments up to a set height and then scrolls inside itself, so the render start card stays in reach. Hovering and clicking work the same in both places: a comment lights its pin, a pin lights and scrolls to its comment, and a click moves the edit cursor there.
+2. The ruler's 0:00 follows the open version.
+So a comment at 1:23 in CuePort sits at 1:23 on your ruler.
+- New switch in Settings, Project markers: Ruler 0:00 at version start. On by default.
+- The first time the script moves the ruler, your own Project start time is kept in the project.
+- It comes back when you turn the switch off, when you log out, and while a version without a known start is open.
+- A Project start time after the start of the timeline (a film template at 1:00:00) is left alone, because REAPER offers no way to give it back.
+- Each move of the ruler is one undo step, and your edit cursor stays where it was.
 
-SINCE 1.36.0
+3. A known start cannot be moved by accident.
+Set to edit cursor sits where Set render start used to be and looks the same. One press with the cursor at the start of the timeline could put a correctly placed version almost a second off. Now, when the start of a version is known, the row shows where it sits on your ruler (for example at 0:00.000) and offers only Clear. Set to edit cursor comes back after Clear. Changing a start is two deliberate steps.
 
-Pairing works with a code: open CuePort, generate a pairing code there while logged in to your studio, and type it into the plugin. The classic browser approval is still on the login screen for now.
+4. After an upload the script opens the new version straight away.
+Before, it stayed on the version that was open, unless you left the upload page through the button at its foot. Going back through the menu, then Sync and A/B, fetched the old version, its comments and its start. Now the new version opens the moment the upload is done, however you leave the page.
+
+5. The render window closes by itself.
+Before, REAPER's window Finished in ... stayed open after every render from the script. The script now uses the render action that closes it. On a REAPER build without that action it falls back to the old one, and the window stays open as before.
+
+6. The render start marker is information only.
+It shows where the open version begins and is set only when that start is known. The setting Move 0:00 to the render start and the old Set render start button are gone; their job is done by points 1 and 2.
+
+WHAT WAS FIXED
+
+1. A second render could not be sent.
+Render and send worked once. Rendered again, the page still said Sent and the send button stayed grey, so the second render never left the computer; only restarting the script helped. The page compared file names, and a render always has the same name. A fresh render now clears that, and can be sent as often as you like in a row.
+
+2. The render wrote no file, although it did.
+A short render (a time selection, a fast computer) could be reported as the render wrote no file. REAPER hands out a cached listing of a folder, so the file that had just been written was not in it yet. Every folder listing in the script is read fresh now.
+
+3. FLAC went up at 16 bit.
+The page said FLAC 24 bit, but on some computers the file arrived at 16 bit, without dither, because REAPER's FLAC default depends on the computer. The script now asks for 24 bit explicitly, and your own render settings are still put back afterwards.
+
+4. The comment markers stayed behind after a render over a time selection.
+Moving 0:00 to the render start moved the start marker but not the comment markers or the A/B reference. This whole mechanism is replaced by point 1 above.
+
+5. The render start marker appeared at 0:00 on its own.
+Opening the script on a version whose start was not known put CP: Render start on the 0:00 of the ruler, which read as the script setting your render start. It is only drawn when the start is known now.
 
 WHAT THE SCRIPT DOES
 

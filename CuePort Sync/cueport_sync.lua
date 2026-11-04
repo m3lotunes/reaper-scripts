@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.37.0
+-- @version 1.38.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -28,12 +28,13 @@
 --
 --   Only when you ask for it, and nothing else is touched:
 --   project markers named "CP @author: time", one per comment; a marker
---   "CP: Render start" and the project time offset when you set the render
---   start; a hidden track "CuePort A/B" with one item and a hardware-output
+--   "CP: Render start" showing where the open version begins; the ruler's
+--   0:00 at that start (Settings > Ruler 0:00 at version start, on unless you
+--   turn it off; your own Project start time comes back when you do); a hidden track "CuePort A/B" with one item and a hardware-output
 --   send while the A/B reference is loaded, plus its audio file in a folder
 --   "CuePort A-B" next to the .rpp; the bound production and a cache of its
 --   comments in the project's extension data; and the edit cursor when you
---   click the waveform. Marker sync, render start and removing the A/B track
+--   click the waveform. Marker sync, the version start and removing the A/B track
 --   are named undo steps. Your project itself never leaves the machine; the
 --   only audio that does is a render you upload yourself.
 --   The same list, in full, is on the script's About screen.
@@ -87,7 +88,7 @@
 
 local K = {}
 
-K.VERSION            = '1.37.0'
+K.VERSION            = '1.38.0'
 K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 -- Das Portal (nicht die API): dort erzeugt das eingeloggte Studio den
 -- Pairing-Code, den der Producer hier eintippt.
@@ -1128,6 +1129,19 @@ K.COMMENTS_POS_KEY   = 'comments_pos'
 -- on" lives in exactly one place.
 K.MARKERS_ON_KEY     = 'markers_on'
 K.RS_MARKER_ON_KEY   = 'render_marker_on'
+-- Whether the ruler's 0:00 follows the open version's start, so the comment
+-- times CuePort shows are the times on his ruler. Global, unset means on
+-- (founder's choice, 2026-11-04). The producer's own Project start time is
+-- kept per project the first time the script moves it, and given back when
+-- the switch goes off, on logout, and for a version without a known start.
+K.RULER_FOLLOW_KEY   = 'ruler_follow'
+K.RULER_OWN_KEY      = 'ruler_own'
+-- "Markers: Set project time offset to current edit cursor position". The only
+-- way a script moves the ruler: GetSetProjectInfo has no key for it (tried in
+-- Reaper 7.84, every candidate reads 0 and writes nothing). It can only put
+-- 0:00 at or after the start of the timeline -- a start time of its own BEFORE
+-- that cannot be set this way (see Markers.applyRuler).
+K.ACTION_SET_TIMEOFFS_TO_CURSOR = 43345
 -- That the render start was set by us. The marker on the ruler is normally the
 -- proof; with the marker switched off there is nothing to look at, so the fact
 -- is written down here as well. Per project, because that is what it describes.
@@ -1141,6 +1155,9 @@ K.STUDIO_NAME_KEY    = 'studio_name'
 -- like the binding itself: two .rpp files bound to the same production may
 -- well be working on different versions of it.
 K.VERSION_KEY        = 'version_id'
+-- Where the open version begins in this project, in seconds from the start of
+-- the timeline (internal 0). '' = not known. See Markers.origin.
+K.VERSION_START_KEY  = 'version_start'
 -- The Reply control, in the top-right corner of a comment. Small enough not to
 -- reach into the text it sits over, since it is only there while the mouse is
 -- on the row.
@@ -1223,6 +1240,121 @@ local function getProjectStartOffset()
   return 0
 end
 
+-- ── where a version sits in the project ───────────────────────────────────
+--
+-- Everything that is placed against the open version -- its comment markers,
+-- the A/B reference, a click on a comment, a new comment from the DAW -- is
+-- placed against ONE number: the internal position at which the version's
+-- 0:00 lies. Until v1.38 that number was the ruler's 0:00, which the producer
+-- can move (Project start time, the old render-start button) and which the
+-- script moved itself after every render. With two versions that began in
+-- different places (a time selection from 0:10, then one from 0:20) at most
+-- one of them could be right, and a render over the whole project put the
+-- producer's own 0:00 back to the start of the timeline.
+--
+-- Now the start belongs to the version: CuePort keeps it (`daw_start`, sent
+-- with every upload from here and settable afterwards), the sync hands it over
+-- and it is kept in the project, so the markers can be put back at start-up
+-- without a request. The ruler follows the version only as a display (Settings,
+-- Markers.applyRuler); nothing is placed against it. Only a version whose start is
+-- not known -- uploaded in the browser, or before this existed -- falls back to
+-- the ruler's 0:00, which is exactly what every earlier version of this script
+-- did, so nothing that worked before moves.
+function Markers.versionStart()
+  local v = tonumber(getProjExt(K.VERSION_START_KEY) or '')
+  if v and v >= 0 then return v end
+  return nil
+end
+
+function Markers.setVersionStart(v)
+  v = tonumber(v)
+  if v and v >= 0 then setProjExt(K.VERSION_START_KEY, string.format('%.9f', v))
+  else setProjExt(K.VERSION_START_KEY, '') end
+  -- Before anything is placed: for a version without a known start the
+  -- comments go from the ruler's 0:00, which has to be his own again by then.
+  Markers.applyRuler()
+end
+
+function Markers.rulerFollows()
+  return getGlobalExt(K.RULER_FOLLOW_KEY) ~= '0'
+end
+
+-- Put the ruler's 0:00 at internal position `pos` (0 or later). One undo step,
+-- edit cursor put back. Nothing done when it is already there, so a sync that
+-- changes nothing does not dirty the project.
+local function rulerZeroAt(pos)
+  if math.abs(getProjectStartOffset() + pos) < 1e-6 then return end
+  local saved = r.GetCursorPosition()
+  r.Undo_BeginBlock()
+  r.SetEditCurPos(pos, false, false)
+  r.Main_OnCommand(K.ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
+  r.SetEditCurPos(saved, false, false)
+  r.UpdateTimeline()
+  r.Undo_EndBlock('CuePort: Ruler 0:00 at version start', -1)
+end
+
+-- Ruler 0:00 at the open version's start, when the switch is on and the start
+-- is known; otherwise his own Project start time, if we ever moved it. Only
+-- what can be given back is taken: a start time of his own that lies after the
+-- start of the timeline (a positive offset, 1:00:00 in a film template) cannot
+-- be restored with the one action there is, so then the ruler is left alone.
+function Markers.applyRuler()
+  local own = tonumber(getProjExt(K.RULER_OWN_KEY) or '')
+  local vs = Markers.versionStart()
+  if Markers.rulerFollows() and vs then
+    if not own then
+      own = getProjectStartOffset()
+      if own > 1e-9 then return end
+      setProjExt(K.RULER_OWN_KEY, string.format('%.9f', own))
+    end
+    rulerZeroAt(vs)
+  else
+    Markers.giveRulerBack()
+  end
+end
+
+function Markers.giveRulerBack()
+  local own = tonumber(getProjExt(K.RULER_OWN_KEY) or '')
+  if not own then return end
+  rulerZeroAt(-own)
+  setProjExt(K.RULER_OWN_KEY, '')
+end
+
+-- The settings switch. Re-places what hangs on the ruler: a version without a
+-- known start goes from the ruler's 0:00, which just moved.
+function Markers.setRulerFollow(on)
+  setGlobalExt(K.RULER_FOLLOW_KEY, on and '1' or '0')
+  Markers.applyRuler()
+end
+
+-- The internal position of the open version's 0:00.
+function Markers.origin()
+  local v = Markers.versionStart()
+  if v then return v end
+  return -getProjectStartOffset()
+end
+
+-- Tell CuePort where the open version begins in this project (Markers.origin),
+-- or forget it (`pos` nil). `clear` rather than a null: rxi/json drops a nil
+-- from a table, so there is no way to send one. Only on a worker that lists
+-- `daw_start` -- an older one does not have the route, and its coarse gate
+-- would answer 401, which this would read as a dead token.
+function Markers.saveStart(pos)
+  if not (state.apiFeatures and state.apiFeatures['daw_start']) then
+    return nil, 'CuePort does not support this yet'
+  end
+  local payload = { production_id = state.boundProductionId, version_id = state.versionId }
+  if pos then payload.daw_start = pos else payload.clear = true end
+  local status, body, err = httpPOST(state.apiUrl .. '/reaper/version/start', authHeaders(), payload)
+  if not status then return nil, err end
+  if status == 401 then return nil, 'unauthorized' end
+  if status ~= 200 then
+    local parsed = json.decode(body or '')
+    return nil, (parsed and parsed.error) or ('HTTP ' .. status)
+  end
+  return true
+end
+
 -- Distinct name + color for the visible "render start" marker. We check for
 -- exact name match so regular CuePort comment markers (prefix "CP ") are
 -- unaffected.
@@ -1244,85 +1376,39 @@ local function renderMarkerWanted()
   return getGlobalExt(K.RS_MARKER_ON_KEY) ~= '0'
 end
 
-local function findRenderStartMarker()
-  local i = 0
+-- The "CP: Render start" marker is information now, nothing more: it shows
+-- where the open version begins (Markers.origin). Until v1.38 it was set by
+-- shifting the project's time offset (action 43345, "Set 0:00 to edit
+-- cursor") and the script did that after every render -- which is how a
+-- producer's own 0:00, a Project start time from his template, got reset by a
+-- render over the whole project. The ruler is no longer touched at all.
+--
+-- It sits at the open version's start (Markers.origin) and only when that
+-- start is known. Without one there is no marker: the comments then go from
+-- the ruler's 0:00, and a marker there would only show a guess.
+function Markers.placeStartMarker()
+  -- Only where the start is actually known. Without one the comments go from
+  -- the ruler's 0:00 as before, but a marker there read as "the script set my
+  -- render start to 0:00" (reported from the device) -- it showed a guess.
+  local want = renderMarkerWanted() and Markers.versionStart() ~= nil
+  local pos = Markers.origin()
+  -- Every marker of ours that is not where it should be goes; one that already
+  -- is stays (a project from an older build keeps the one it has).
+  local kept, i = false, 0
+  local doomed = {}
   while true do
-    local retval, isrgn, pos, _, name, idx = r.EnumProjectMarkers3(0, i)
+    local retval, isrgn, mpos, _, name, idx = r.EnumProjectMarkers3(0, i)
     if retval == 0 then break end
     if not isrgn and name == K.CP_START_MARKER_NAME then
-      return { pos = pos, idx = idx }
+      if want and not kept and math.abs(mpos - pos) < 1e-6 then kept = true
+      else doomed[#doomed+1] = idx end
     end
     i = i + 1
   end
-  return nil
-end
-
--- Shift the project ruler so that the edit-cursor position becomes 0:00 AND
--- drop a visible "render start" marker at that spot.
---
--- We invoke the native Reaper action 43345 ("Markers: Set project time
--- offset to current edit cursor position") — the same action triggered by
--- the ruler-right-click menu under "Change start time/measure → Set 0:00
--- to current edit cursor". This is version-proof across Reaper builds.
-K.ACTION_SET_TIMEOFFS_TO_CURSOR = 43345
-
--- `pos` rather than always the cursor: a render bounded by a time selection
--- knows exactly where the file begins (GetSet_LoopTimeRange), and having to put
--- the cursor there first to say so would be a step the script can take itself.
--- The action reads the edit cursor, so the cursor is moved, the action run, and
--- the cursor put back -- the same three steps clearRenderStart already used.
-local function setRenderStartAt(pos)
-  local cursor = tonumber(pos) or r.GetCursorPosition()
-  local savedCursor = r.GetCursorPosition()
-  r.Undo_BeginBlock()
-  if cursor ~= savedCursor then r.SetEditCurPos(cursor, false, false) end
-  r.Main_OnCommand(K.ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
-  if cursor ~= savedCursor then r.SetEditCurPos(savedCursor, false, false) end
-
-  -- Written down whether or not the marker is drawn: with the marker switched
-  -- off there is nothing on the ruler to read the answer off, and "is the
-  -- render start set?" still has to have one.
-  setProjExt(K.RENDER_START_KEY, '1')
-
-  local existing = findRenderStartMarker()
-  if renderMarkerWanted() then
-    local color = cpStartMarkerColor()
-    if existing then
-      r.SetProjectMarker3(0, existing.idx, false, cursor, 0, K.CP_START_MARKER_NAME, color)
-    else
-      r.AddProjectMarker2(0, false, cursor, 0, K.CP_START_MARKER_NAME, -1, color)
-    end
-  elseif existing then
-    -- Switched off while one was still lying there.
-    r.DeleteProjectMarker(0, existing.idx, false)
+  for j = #doomed, 1, -1 do r.DeleteProjectMarker(0, doomed[j], false) end
+  if want and not kept then
+    r.AddProjectMarker2(0, false, pos, 0, K.CP_START_MARKER_NAME, -1, cpStartMarkerColor())
   end
-
-  r.UpdateTimeline()
-  r.Undo_EndBlock('CuePort: Set render start', -1)
-  return true
-end
-
-local function setRenderStartAtCursor()
-  return setRenderStartAt(r.GetCursorPosition())
-end
-
--- Clear the project time offset (back to 0:00 at internal 0) and remove the
--- render-start marker we placed. We reset by temporarily placing the edit
--- cursor at 0 and re-running the "set offset" action; then restore the
--- cursor.
-local function clearRenderStart()
-  r.Undo_BeginBlock()
-  local savedCursor = r.GetCursorPosition()
-  r.SetEditCurPos(0, false, false)
-  r.Main_OnCommand(K.ACTION_SET_TIMEOFFS_TO_CURSOR, 0)
-  r.SetEditCurPos(savedCursor, false, false)
-  local existing = findRenderStartMarker()
-  if existing then
-    r.DeleteProjectMarker(0, existing.idx, false)
-  end
-  setProjExt(K.RENDER_START_KEY, '')
-  r.UpdateTimeline()
-  r.Undo_EndBlock('CuePort: Clear render start', -1)
 end
 
 -- `parent_id` and `is_studio` are carried through because the list draws a
@@ -1415,10 +1501,9 @@ local function syncCommentsToMarkers(comments)
     return (a.created_at or 0) < (b.created_at or 0)
   end)
 
-  -- Honour Reaper's project start offset so comments at timestamp T end up
-  -- at ruler 0:00 + T (not at internal time T which would show at T-offset
-  -- once the user has moved the ruler origin).
-  local offset = getProjectStartOffset()
+  -- A comment at T lies T after the version's own 0:00 (Markers.origin).
+  -- Kept as an `offset` with the old sign, so the cache keeps its meaning.
+  local offset = -Markers.origin()
 
   -- Rebuild strategy: delete all our existing CP markers, then create fresh
   -- from the current API payload. Simpler than diffing and keeps the marker
@@ -1454,6 +1539,7 @@ local function syncCommentsToMarkers(comments)
   end
 
   saveCommentsCache(validComments, offset)
+  Markers.placeStartMarker()
 
   r.UpdateTimeline()
   r.Undo_EndBlock('CuePort: Sync artist comments (markers)', -1)
@@ -1653,6 +1739,9 @@ local function logout()
   -- until it is opened and logged out from as well.
   pcall(Markers.remove)
   setProjExt(K.COMMENTS_CACHE_KEY, '')
+  setProjExt(K.VERSION_START_KEY, '')
+  -- His own Project start time back, if the ruler followed a version.
+  pcall(Markers.giveRulerBack)
   setProjExt(K.WAVEFORM_CACHE_KEY, '')
   state.markersPlacedFor = nil
   -- And the binding with it: logging out means this Reaper is no longer
@@ -2660,9 +2749,9 @@ function AB.buildTrack(filePath)
     r.SetTrackSendInfo_Value(tr, 1, sendIdx, 'I_DSTCHAN', 0)  -- 0 = stereo outs 1/2
   end
 
-  -- Place the audio so audio-time 0 lands at internal position -offset (the
-  -- render-start), matching the comment markers + waveform mapping.
-  local offset = getProjectStartOffset()
+  -- Place the audio so audio-time 0 lands where the version begins
+  -- (Markers.origin), matching the comment markers + waveform mapping.
+  local offset = -Markers.origin()
   local src = r.PCM_Source_CreateFromFile(filePath)
   if not src then
     r.DeleteTrack(tr)
@@ -2693,7 +2782,7 @@ function AB.reposition()
   if not tr then return end
   local item = r.GetTrackMediaItem(tr, 0)
   if not item then return end
-  r.SetMediaItemInfo_Value(item, 'D_POSITION', -getProjectStartOffset())
+  r.SetMediaItemInfo_Value(item, 'D_POSITION', Markers.origin())
   r.UpdateItemInProject(item)
   r.UpdateTimeline()
 end
@@ -2801,6 +2890,7 @@ end
 function AB.statsIn(dir, prefix)
   prefix = prefix or '^cueport_ab_'
   local count, bytes = 0, 0
+  r.EnumerateFiles(dir, -1)   -- Reaper caches the listing; see Rnd.clearTargets
   local i = 0
   while true do
     local fn = r.EnumerateFiles(dir, i)
@@ -2844,6 +2934,7 @@ end
 function AB.clearCache()
   local dir = AB.globalCacheDir()
   local names = {}
+  r.EnumerateFiles(dir, -1)   -- Reaper caches the listing; see Rnd.clearTargets
   local i = 0
   while true do
     local fn = r.EnumerateFiles(dir, i)
@@ -2917,11 +3008,23 @@ local Rnd = {}
 
 K.RND_PREFIX    = 'cueport_render_'
 K.RND_NOTE_NAME = 'cueport_render_restore.txt'
--- FLAC 24 bit, level 5 -- the same file the studio portal produces, measured
--- from this four-byte cookie on the probe run. NEVER compare RENDER_FORMAT
--- against this string: it reads back expanded, not as the cookie.
-K.RND_FORMAT    = 'calf'
+-- FLAC 24 bit, level 5 -- the same file the studio portal produces. Spelled out
+-- in full, base64 of 'calf' + bit depth + level as two little-endian int32:
+--   63 61 6c 66 | 18 00 00 00 | 05 00 00 00   -> 24 bit, level 5
+-- NOT the bare cookie 'calf'. The cookie means "FLAC with default settings",
+-- and what those are is not ours to decide: on a fresh Reaper 7.84 it read back
+-- as 10 00 00 00 = 16 bit, and that is what came out (STREAMINFO of the
+-- uploaded files), while the page said 24. Undithered, because RENDER_DITHER is
+-- switched off below. An earlier probe on the user's Mac had read 24 bit from
+-- the same cookie -- which is exactly the problem: it depended on the machine.
+K.RND_FORMAT    = 'Y2FsZhgAAAAFAAAA'
 K.ACTION_RENDER_LAST = 41824   -- File: Render project, using the most recent settings
+-- The same render, but REAPER closes its render window when it is done.
+-- 41824 leaves the "Finished" window standing, and a producer rendering from
+-- here has to close it by hand every time (reported from the device). Asked
+-- for by name at run time: a build that does not know the action falls back to
+-- 41824 rather than to nothing.
+K.ACTION_RENDER_CLOSE = 42230  -- ... using the most recent render settings, auto-close render dialog
 
 -- Source selection inside RENDER_SETTINGS. Measured, not read off the docs:
 -- four probe runs on the user's machine gave 0 for master mix, 3 (bits 0+1)
@@ -3091,6 +3194,7 @@ function Rnd.apply(opts)
   Rnd.setNum('RENDER_BOUNDSFLAG',
              opts.bounds == 'timesel' and K.RND_BOUNDS_TIMESEL or K.RND_BOUNDS_PROJECT)
 
+
   -- Mask, do not overwrite: everything in RENDER_SETTINGS other than the three
   -- source bits is something we did not identify on the probe runs, and a field
   -- assigned outright would take those unknowns with it.
@@ -3192,7 +3296,17 @@ end
 -- Everything of ours already lying at the target. Reaper does not overwrite
 -- silently -- it puts a number after the name -- so a leftover from last time
 -- would make "exactly one file" false and hand back the wrong path.
+--
+-- Every listing here starts with EnumerateFiles(dir, -1). Reaper does not read
+-- the folder on each call: it keeps the listing it made and hands that out
+-- again for about half a second (measured in Reaper 7.84: a file written in
+-- between was missing until the -1 call, and showed up by itself 0.5 s later).
+-- clearTargets lists the folder right before the render and producedFiles right
+-- after it, inside one blocking call -- so a render that took less than that
+-- (a short time selection on a fast machine) was looked for in the listing from
+-- BEFORE it, and came back as "the render wrote no file" although it was there.
 function Rnd.clearTargets(dir, pattern)
+  r.EnumerateFiles(dir, -1)
   local i, names = 0, {}
   while true do
     local fn = r.EnumerateFiles(dir, i)
@@ -3209,6 +3323,7 @@ function Rnd.clearTargets(dir, pattern)
 end
 
 function Rnd.producedFiles(dir, pattern)
+  r.EnumerateFiles(dir, -1)   -- the listing from before the render is stale
   local i, out = 0, {}
   while true do
     local fn = r.EnumerateFiles(dir, i)
@@ -3225,6 +3340,13 @@ end
 -- The shape here is the one the probe run insisted on: the restore runs OUTSIDE
 -- the pcall, so a throw in the middle still gives the producer his dialog back,
 -- and the verdict is read off the files afterwards rather than claimed.
+-- Which render action to run: the auto-closing one when this REAPER has it.
+function Rnd.renderAction()
+  local ok, name = pcall(r.kbd_getTextFromCmd, K.ACTION_RENDER_CLOSE, 0)
+  if ok and type(name) == 'string' and name ~= '' then return K.ACTION_RENDER_CLOSE end
+  return K.ACTION_RENDER_LAST
+end
+
 function Rnd.run(opts)
   opts = opts or {}
   local dir     = opts.dir or Rnd.outDir()
@@ -3238,7 +3360,7 @@ function Rnd.run(opts)
 
   local okRun = pcall(function()
     Rnd.apply({ bounds = opts.bounds, source = opts.source, dir = dir, pattern = pattern })
-    r.Main_OnCommand(K.ACTION_RENDER_LAST, 0)
+    r.Main_OnCommand(Rnd.renderAction(), 0)
   end)
 
   Rnd.restore(snap)
@@ -3614,6 +3736,7 @@ function Up.complete(uploadId, fields)
   payload.duration = fields.duration
   payload.waveform = fields.waveform
   payload.notify   = fields.notify
+  payload.daw_start = fields.dawStart
   local status, body, err = httpRequest('POST', Up.base() .. '/reaper/upload/complete',
     (function() local h = authHeaders(); h['Content-Type'] = 'application/json'; return h end)(),
     json.encode(payload), { maxTime = 120 })
@@ -3660,7 +3783,7 @@ function Up.begin(job)
     duration = job.duration, waveform = job.waveform,
     ext = (job.path:match('%.([%w]+)%s*$') or 'flac'):lower(),
     parts = {}, sent = 0, partSize = K.UP_PART_SIZE,
-    keepRender = job.keepRender,
+    keepRender = job.keepRender, dawStart = job.dawStart,
   }
   return state.upload
 end
@@ -3749,6 +3872,7 @@ function Up.step()
       duration = u.duration,
       waveform = u.waveform,
       notify = u.notify,
+      dawStart = u.dawStart,
     })
     if not res then
       u.phase, u.error = 'error', 'finishing the upload: ' .. tostring(err)
@@ -3796,6 +3920,7 @@ local function bindProduction(prod, trackType)
   state.versionsTriedFor = nil
   state.selectedVersionId, state.versionSwitchFrom = nil, nil
   setProjExt(K.VERSION_KEY, '')
+  Markers.setVersionStart(nil)
   -- Asked for once, on the first sync of this binding: after that the version
   -- id is what identifies the version, and a type left standing would override
   -- it on every sync that followed.
@@ -3875,21 +4000,10 @@ end
 
 function Markers.setRenderMarker(on)
   setGlobalExt(K.RS_MARKER_ON_KEY, on and '1' or '0')
-  local existing = findRenderStartMarker()
-  if on then
-    -- Back at the ruler origin. The internal position of "0:00 on the ruler" is
-    -- minus the project offset -- the same number the A/B item is placed at.
-    -- Only if the render start was actually set: otherwise this would invent a
-    -- marker for something that never happened.
-    if not existing and getProjExt(K.RENDER_START_KEY) == '1' then
-      r.AddProjectMarker2(0, false, -getProjectStartOffset(), 0,
-                          K.CP_START_MARKER_NAME, -1, cpStartMarkerColor())
-    end
-  elseif existing then
-    r.DeleteProjectMarker(0, existing.idx, false)
-  end
+  -- Only ever where the version's start is known (Markers.placeStartMarker):
+  -- switching it on must not invent a marker for a start nobody set.
+  Markers.placeStartMarker()
   r.UpdateTimeline()
-  state.rsSet = nil   -- the answer comes from somewhere else now
 end
 
 -- Ask for a sync without doing it here. The caller's frame finishes painting
@@ -3900,6 +4014,23 @@ local function queueSync()
   if not state.boundProductionId or state.syncInProgress then return end
   state.syncRequested = true
   state.syncStatus    = 'Loading comments...'
+end
+
+-- The open version's start changed (set or cleared, Markers.origin).
+-- Everything placed against it follows, in one place: the comment markers, the
+-- A/B item and the start marker. Re-placed from the cached comments, no
+-- request; only a project that has never synced falls back to fetching.
+-- (Until v1.38 this was what followed a shifted ruler -- and the render path
+-- shifted the ruler without calling it, which left the comment markers where
+-- the old 0:00 had put them.)
+function Markers.followOffset(quiet)
+  AB.reposition()
+  if not realignMarkers(quiet) then
+    -- Nothing cached to place comments from; the start marker still moves.
+    Markers.placeStartMarker()
+    r.UpdateTimeline()
+    queueSync()
+  end
 end
 
 local function doSync()
@@ -3927,6 +4058,8 @@ local function doSync()
       state.versionId         = back.versionId
       state.versionFilename   = back.filename
       setProjExt(K.VERSION_KEY, back.id or '')
+      -- And its start: the markers on the ruler are still the old version's.
+      Markers.setVersionStart(back.dawStart)
       -- The reference is gone either way -- the switch took it down before the
       -- request went out -- so there is nothing to put back here. It is loaded
       -- again by pressing the button, for whichever version we ended up on.
@@ -3941,7 +4074,13 @@ local function doSync()
   -- from this response, so there is nothing to go back to any more.
   state.versionSwitchFrom = nil
   local comments = resp.comments or {}
+  -- Where this version begins, BEFORE the markers are placed: they are placed
+  -- against it. A worker that does not know the field sends nothing, and the
+  -- version is then placed against the ruler as before (Markers.origin).
+  Markers.setVersionStart(resp.version and resp.version.daw_start)
   local summary = syncCommentsToMarkers(comments)
+  -- The reference, if one is loaded, belongs to this version and follows it.
+  AB.reposition()
   state.lastSyncResult = summary
   state.lastSyncAt = os.time()
 
@@ -4542,6 +4681,7 @@ function Art.clear()
   -- Collect first, delete after: deleting while enumerating shifts the indices
   -- under the loop, which silently skips every second file.
   local dir, doomed, i = Art.dir(), {}, 0
+  r.EnumerateFiles(dir, -1)   -- Reaper caches the listing; see Rnd.clearTargets
   while true do
     local fn = r.EnumerateFiles(dir, i)
     if not fn then break end
@@ -5731,31 +5871,21 @@ K.MAIN_MIN_H_CAP = 800
 -- Blend two 0xRRGGBBAA colours. Used for the pulse on a button that is asking
 -- to be pressed; keeping it here means the pulse is one expression, not a
 -- hand-rolled bit fiddle at the call site.
--- Is CuePort's render start actually set? Answered by the marker we place, not
--- by Reaper's project time offset: a project template can carry an offset the
--- user never asked for, and then the button sat there claiming to be done on a
--- brand new project. Deleting the marker is also the first thing "Clear" does,
--- so this flips the moment it is pressed rather than after the re-sync.
---
--- Cached for a quarter second because it walks every project marker, and after
--- a sync there can be a lot of them. Set/Clear drop the cache themselves.
+-- Is it known where the open version begins? (Markers.versionStart.) Not the
+-- project's time offset: that is the producer's ruler and says nothing about
+-- where any one version sits.
 function UI.renderStartSet()
-  local now = r.time_precise()
-  if state.rsSet ~= nil and state.rsAt and now < state.rsAt + 0.25 then
-    return state.rsSet
-  end
-  state.rsAt  = now
-  -- While the marker is on the ruler it is the answer, and a marker the user
-  -- deleted by hand is a "no" -- that is the whole reason this reads the ruler
-  -- rather than Reaper's offset, which a project template can carry in without
-  -- anybody asking. With the marker switched off there is nothing to look at,
-  -- so the note we wrote when setting it stands in.
-  if renderMarkerWanted() then
-    state.rsSet = findRenderStartMarker() ~= nil
-  else
-    state.rsSet = getProjExt(K.RENDER_START_KEY) == '1'
-  end
-  return state.rsSet
+  return Markers.versionStart() ~= nil
+end
+
+-- A project position as the ruler shows it (Project start time included),
+-- to the millisecond: "at 0:00.000", "at -0:00.938".
+function UI.rulerTime(pos)
+  local t = (pos or 0) + getProjectStartOffset()
+  local sign = t < 0 and '-' or ''
+  t = math.abs(t)
+  local m = math.floor(t / 60)
+  return string.format('at %s%d:%06.3f', sign, m, t - m * 60)
 end
 
 function UI.mix(a, b, t)
@@ -6538,7 +6668,7 @@ function UI.commentList(w, h, below)
         if clickNow and not onCtl and c.timestamp then
           -- The same conversion the waveform strip does: the timestamps are
           -- times in the audio, and the ruler may be shifted under them.
-          r.SetEditCurPos(c.timestamp - getProjectStartOffset(), true, true)
+          r.SetEditCurPos(c.timestamp + Markers.origin(), true, true)
         end
       end
       ImGui.PushID(ctx, 'cmt' .. tostring(i))
@@ -7078,12 +7208,25 @@ function UI.settings()
 
     local rmHit, rmVal
     UI.row('Render start marker',
-           'The marker showing where bar 1 sits. Turning it off leaves the ' ..
-           'ruler origin exactly where it is -- only the marker goes. Set and ' ..
-           'Clear go on working, and the marker returns with this switch.',
+           'The marker showing where the open version begins in your project. ' ..
+           'It is only a marker: turning it off changes nothing about where ' ..
+           'comments and A/B are placed, and it returns with this switch.',
            32, function() rmHit, rmVal = UI.toggle('##rsmarker', renderMarkerWanted()) end,
            nil, K.TOGGLE_H)
     if rmHit then Markers.setRenderMarker(rmVal) end
+
+    UI.rowSep()
+
+    local rfHit, rfVal
+    UI.row('Ruler 0:00 at version start',
+           'Moves the ruler\'s 0:00 to where the open version begins, so the ' ..
+           'comment times in CuePort are the times on your ruler. Your own ' ..
+           'Project start time is kept and comes back when you turn this off ' ..
+           'or log out. A Project start time after the start of the timeline ' ..
+           'is left alone.',
+           32, function() rfHit, rfVal = UI.toggle('##rulerfollow', Markers.rulerFollows()) end,
+           nil, K.TOGGLE_H)
+    if rfHit then Markers.setRulerFollow(rfVal); Markers.followOffset(true) end
   end)
 
   panel('quick', 'Quick access', function()
@@ -7325,9 +7468,12 @@ function UI.about()
     UI.bullet('A/B downloads the version\'s audio into a hidden track that routes ' ..
               'straight to your soundcard, past the master bus -- so the comparison ' ..
               'is against your mix, not through your master chain.')
-    UI.bullet('Render start marks where bar 1 of your project sits inside the ' ..
-              'uploaded file, so a comment at 1:23 lands at 1:23 of the audio and ' ..
-              'not 1:23 of your timeline.')
+    UI.bullet('Each version remembers where it begins in your project, so a ' ..
+              'comment at 1:23 lands 1:23 into that version\'s audio, whichever ' ..
+              'version you open. Renders sent from here bring it along; for one ' ..
+              'uploaded in the browser you set it once. The ruler\'s 0:00 moves to ' ..
+              'that start, so CuePort\'s comment times are your ruler\'s times; ' ..
+              'turn that off in Settings and your own Project start time comes back.')
     UI.bullet('Send a render back, without the browser. The Render page borrows ' ..
               'Reaper\'s render settings for the one pass and puts all of them ' ..
               'back afterwards, byte for byte, whether it worked or not. The ' ..
@@ -7350,10 +7496,9 @@ function UI.about()
               'Sync removes the previous set and writes the current one, so ' ..
               'switching version replaces them with that version\'s. Nothing at ' ..
               'all if you switched them off under Settings, Project markers.')
-    UI.bullet('A marker named "' .. K.CP_START_MARKER_NAME .. '", when you set the ' ..
-              'render start -- unless you switched that marker off. The project\'s ' ..
-              'time offset moves either way: the switch only hides the marker, and ' ..
-              'clearing puts the offset back.')
+    UI.bullet('A marker named "' .. K.CP_START_MARKER_NAME .. '" where the open ' ..
+              'version begins, when that is known -- unless you switched it off. ' ..
+              'The project\'s time offset (your ruler\'s 0:00) is never changed.')
     UI.bullet('A track named "' .. K.AB_TRACK_NAME .. '", hidden from the track ' ..
               'panel and the mixer, with one item and a hardware-output send, for ' ..
               'as long as the A/B reference is loaded.')
@@ -7388,7 +7533,7 @@ function UI.about()
               'switches that one repository off and on again, which is what ' ..
               'makes ReaPack update it alone; the setting is put back afterwards.')
     ImGui.Dummy(ctx, 0, 7)
-    UI.para('Syncing markers, setting or clearing the render start, reading the ' ..
+    UI.para('Syncing markers, reading the ' ..
             'waveform and removing the A/B track are named undo steps. Inserting ' ..
             'the A/B track is not -- use Remove rather than Undo for that one.')
   end)
@@ -8307,6 +8452,7 @@ function UI.rememberVersion(v)
   state.versions[#state.versions + 1] = {
     id = v.id, track_type = v.track_type, version_number = v.version_number,
     label = v.label, filename = v.name or v.filename, created_at = v.created_at,
+    daw_start = v.daw_start,
   }
 end
 
@@ -8350,7 +8496,7 @@ function UI.switchVersion(v)
   -- this back on failure and clears it on success.
   state.versionSwitchFrom = {
     id = prevId, versionId = prevVersionId, filename = prevFilename,
-    label = prevLabel,
+    label = prevLabel, dawStart = Markers.versionStart(),
   }
   -- The reference track is playing the old version's audio. Take it down and
   -- delete its file; loading the new one is a decision, not a side effect.
@@ -8563,7 +8709,7 @@ end
 --
 -- Time mapping (kept in lock-step with syncCommentsToMarkers): a comment at
 -- audio-time T is placed at internal Reaper position `T - offset`, where
--- `offset = getProjectStartOffset()`. So:
+-- `offset = -Markers.origin()` (the version's start in the project). So:
 --     audio_time   = internal_pos + offset
 --     internal_pos = audio_time   - offset
 function UI.waveform()
@@ -8585,7 +8731,7 @@ function UI.waveform()
   end
 
   local comments = loadCommentsCache()
-  local offset   = getProjectStartOffset()
+  local offset   = -Markers.origin()
   local playState = r.GetPlayState()
   local playing   = (playState & 1) == 1
   local paused    = (playState & 2) == 2
@@ -9058,98 +9204,102 @@ function UI.bound()
     state.cmtBelowHNow = math.max(0, (y1 or 0) - (y0 or 0)) + 8
   end
 
-  -- ── Render-start anchor section ─────────────────────────────────────────
-  -- Lets the user tell Reaper where the render starts (== ruler 0:00) so
-  -- that comment timestamps land at the correct ruler positions.
-  UI.section('Align markers with your render')
+  -- ── Where this version starts ──────────────────────────────────────────
+  -- Every comment marker and the A/B reference are placed from the open
+  -- version's start in the project (Markers.origin). Renders from here bring it
+  -- along; for a version uploaded in the browser it is set here, once.
+  UI.section('Where this version starts')
   card = UI.cardBegin('bound_align')
-    -- The explanation sits behind a "?" like every description in Settings, so
-    -- the card is a row to scan instead of a paragraph to read.
-    -- Read first: the offset only belongs in the explanation once our own
-    -- marker is really on the ruler.
     local isSet = UI.renderStartSet()
     local HELP_ALIGN =
-      'Move the edit cursor to the exact start of your rendered audio and press ' ..
-      '"Set render start at cursor". CuePort shifts the ruler so that position ' ..
-      'becomes 0:00 and drops a visible marker there, which is what makes the ' ..
-      'comment timestamps land in the right place. "Clear" undoes it.'
+      'Where the open version begins in this project. Comment markers and the ' ..
+      'A/B reference are placed from there. A render uploaded from CuePort Sync ' ..
+      'brings it along. For a version uploaded in the browser, put the edit ' ..
+      'cursor where its audio begins and press "Set to edit cursor". A known ' ..
+      'start can only be cleared here, not moved by accident; to change it, ' ..
+      'press Clear first.'
     if isSet then
-      -- Was a green line under the card. It said "is set" whenever Reaper
-      -- reported any offset at all -- including one a project template brought
-      -- along that nobody asked for -- so it could claim the markers were
-      -- anchored while the button beside it was still pulsing for attention.
-      -- Now it hangs off the marker, and it lives behind the "?" with the rest
-      -- of the explanation rather than as a permanent line of status.
       HELP_ALIGN = HELP_ALIGN .. string.format(
-        '\n\nCurrently set: the ruler is offset by %+.2fs.', getProjectStartOffset())
+        '\n\nThis version begins %s into the project timeline.',
+        formatTimestamp(Markers.versionStart()))
+    else
+      HELP_ALIGN = HELP_ALIGN ..
+        '\n\nNot known for this version, so its comments are placed from 0:00 on your ruler.'
     end
 
     -- Widths come from the space there is, never from a fixed number: a fixed
     -- 240 plus "Clear" ran past the edge on a narrow window, and anything wider
     -- than its window can be dragged sideways.
     local availA = ImGui.GetContentRegionAvail(ctx)
-    -- Both are ordinary buttons now: a SmallButton next to a Button is shorter
-    -- by its own frame padding, and the pair read as two different controls.
     local clearW = ImGui.CalcTextSize(ctx, 'Clear') + 22
     -- Label, its "?", and the check when there is one -- all three, or the row
     -- claims more room for the buttons than it has and the pair runs past the
     -- card edge on a narrow window.
-    local labelW = ImGui.CalcTextSize(ctx, 'Render start') + 6 + 15 + (isSet and (6 + 13) or 0)
+    local labelW = ImGui.CalcTextSize(ctx, 'Version start') + 6 + 15 + (isSet and (6 + 13) or 0)
     local btnW   = math.max(80, math.min(240, availA - clearW - 8 - labelW - 12))
-    -- Label and buttons share a line while there is room; below that the
-    -- buttons drop under the label and keep their width.
-    local oneLine = (labelW + 12 + btnW + 8 + clearW) <= availA
+    -- A known start was measured when the version was rendered here, and is
+    -- more exact than any click. "Set to edit cursor" sits where "Set render
+    -- start" used to, looks the same, and replaced it without asking: from the
+    -- founder's own test on 2026-11-04, one press with the cursor at the start
+    -- of the timeline put a correctly placed version 0.94 s off. So with a known
+    -- start the row shows where it is on the ruler and offers only Clear;
+    -- changing it is two deliberate steps (Clear, then Set). Still possible,
+    -- because a measured start can go stale: time inserted at the front moves
+    -- the music, not the number.
+    local atText = isSet and UI.rulerTime(Markers.versionStart()) or nil
+    local atW = atText and ImGui.CalcTextSize(ctx, atText) or 0
+    local ctlW = isSet and (atW + 8 + clearW) or (btnW + 8 + clearW)
+    local oneLine = (labelW + 12 + ctlW) <= availA
 
-    local function alignButtons()
-      -- Until a render start is set the markers cannot land in the right place,
-      -- so the button asks for attention: a slow pulse between the two brand
-      -- purples. Once it is set it goes quiet and looks like any other button.
-      local pulsed = 0
-      if not isSet then
-        local t = (math.sin(r.time_precise() * 3.2) + 1) / 2
-        ImGui.PushStyleColor(ctx, ImGui.Col_Button(),        UI.mix(CP_COLORS.accentStrong, CP_COLORS.accent, t))
-        ImGui.PushStyleColor(ctx, ImGui.Col_ButtonHovered(), CP_COLORS.accent)
-        ImGui.PushStyleColor(ctx, ImGui.Col_ButtonActive(),  CP_COLORS.accentStrong)
-        ImGui.PushStyleColor(ctx, ImGui.Col_Text(),          0xFFFFFFFF)
-        pulsed = 4
+    local function startButtons()
+      if isSet then
+        -- Centred on the button beside it, the way UI.row centres its own text.
+        local x, y = ImGui.GetCursorPos(ctx)
+        ImGui.SetCursorPos(ctx, x, y + (K.BTN_H - ImGui.GetTextLineHeight(ctx)) / 2)
+        ImGui.Text(ctx, atText)
+        ImGui.SameLine(ctx, 0, 8)
+        ImGui.SetCursorPosY(ctx, y)
       end
-      local go = ImGui.Button(ctx, 'Set render start at cursor', btnW, K.BTN_H)
-      if pulsed > 0 then ImGui.PopStyleColor(ctx, pulsed) end
+      local go = (not isSet) and ImGui.Button(ctx, 'Set to edit cursor', btnW, K.BTN_H)
+      if not isSet then ImGui.SameLine(ctx, 0, 8) end
       if go then
-        local ok, err = setRenderStartAtCursor()
+        local pos = r.GetCursorPosition()
+        local ok, err = Markers.saveStart(pos)
         if ok then
           state.errorMsg = nil
-          -- Move the A/B reference with the new offset so it stays aligned.
-          AB.reposition()
-          state.rsSet = nil            -- re-read the marker on the next frame
-          -- Re-place the markers from the cached comments. No request, so the
-          -- ruler is right before the click has finished. Only a project that
-          -- has never synced falls back to fetching.
-          if not realignMarkers() then queueSync() end
+          Markers.setVersionStart(pos)
+          for _, v in ipairs(state.versions or {}) do
+            if v.id == state.versionId then v.daw_start = pos end
+          end
+          Markers.followOffset()
         else
-          state.errorMsg = err or 'Could not set render start.'
+          state.errorMsg = 'Could not set the version start: ' .. tostring(err)
         end
       end
-      ImGui.SameLine(ctx, 0, 8)
       -- Same kind of button and the same height as its neighbour, so the pair
       -- reads as one control group.
       if ImGui.Button(ctx, 'Clear', clearW, K.BTN_H) then
-        clearRenderStart()
-        AB.reposition()
-        state.rsSet = nil
-        if not realignMarkers() then queueSync() end
+        local ok, err = Markers.saveStart(nil)
+        if ok then
+          state.errorMsg = nil
+          Markers.setVersionStart(nil)
+          for _, v in ipairs(state.versions or {}) do
+            if v.id == state.versionId then v.daw_start = nil end
+          end
+          Markers.followOffset()
+        else
+          state.errorMsg = 'Could not clear the version start: ' .. tostring(err)
+        end
       end
     end
 
-    -- Shown only once our own marker is really on the ruler, which is also the
-    -- moment the button stops pulsing. The two never disagree.
     local mark = isSet and function() UI.tick() end or nil
     if oneLine then
-      UI.row('Render start', HELP_ALIGN, btnW + 8 + clearW, alignButtons, mark, K.BTN_H)
+      UI.row('Version start', HELP_ALIGN, ctlW, startButtons, mark, K.BTN_H)
     else
-      UI.row('Render start', HELP_ALIGN, 0, nil, mark)
+      UI.row('Version start', HELP_ALIGN, 0, nil, mark)
       ImGui.Dummy(ctx, 0, 6)
-      alignButtons()
+      startButtons()
     end
 
   UI.cardEnd(card)
@@ -9173,7 +9323,7 @@ function UI.uploadDefaults()
   if u then return u end
   u = {
     bounds = 'project', source = 'master',
-    notify = true, keepRender = true, setStart = true,
+    notify = true, keepRender = true,
     trackType = nil, mode = nil, file = nil, fileInfo = nil,
   }
   state.up = u
@@ -9227,6 +9377,7 @@ function UI.uploadPickFile()
   if state.upload and (state.upload.phase == 'done' or state.upload.phase == 'error') then
     state.upload = nil
   end
+  u.dawStart, u.dawStartFor = nil, nil
   UI.uploadUseFile(path)
   if u.file and not u.fileError then
     -- Same reason the render is armed rather than run: reading the peaks
@@ -9294,6 +9445,33 @@ function UI.uploadStart(mode)
 end
 
 -- One frame later, from the loop.
+-- Land on the version that was just sent, not on the one that was open before
+-- it -- and do it the moment the upload is done, not when a particular button
+-- is pressed. doSync asks for `state.selectedVersionId`, so a sync after an
+-- upload otherwise fetches the OLD version: its comments, its markers, its
+-- waveform and its start in the project. Reported from the device: back to the
+-- production through the menu (the button at the foot of the page was out of
+-- view), Sync, A/B -- and the reference of the old version, whose start was
+-- unknown, sat at the ruler's 0:00 instead of where the render began. Same
+-- route as the switcher, so the A/B reference for the previous mix comes down
+-- with it. Once per upload (`adopted`).
+--
+-- `filename` is what the version list calls it; the upload answer calls the
+-- same string `name`. The A/B file name and the download URL are built from
+-- it, so it has to be the one the list would have given.
+function UI.adoptUpload(up)
+  if not up or up.phase ~= 'done' or up.adopted then return end
+  up.adopted = true
+  local v = up.version
+  if v and v.id then
+    UI.switchVersion({ id = v.id, filename = v.name, label = v.label,
+                       version_number = v.version_number,
+                       track_type = v.track_type, daw_start = v.daw_start })
+  elseif v then
+    queueSync()
+  end
+end
+
 function UI.uploadPump()
   local u = state.up
   if not u or not u.pending then return end
@@ -9315,24 +9493,28 @@ function UI.uploadPump()
       end
       expect = len
     end
+    -- Where the file begins in the project, read off what was rendered: a time
+    -- selection starts where it starts, the whole project at the start of the
+    -- timeline (measured in Reaper 7.84: whatever the ruler says, "Entire
+    -- project" renders from internal 0). This number goes up with the file
+    -- and is what places the version's comments and its A/B later -- the
+    -- ruler is not touched (Markers.origin).
+    local startPos = 0
+    if u.bounds == 'timesel' then startPos = Rnd.timeSelection() or 0 end
     local ok, info, warns = Rnd.run({
       bounds = u.bounds, source = u.source, expectSec = expect,
       versionKey = state.boundProductionId,
     })
     if not ok then u.status = tostring(info); return end
     u.warnings = warns
-    -- Only now, and only for a render we actually made: shifting the ruler for
-    -- a run that failed would move his project for nothing.
-    --
-    -- Both kinds of render, and zero is a position like any other: a render
-    -- from the top of the project puts the ruler back to 0:00, which is the
-    -- case that used to be skipped and left the offset of the render before it
-    -- standing.
-    if u.setStart then
-      local startAt = 0
-      if u.bounds == 'timesel' then startAt = Rnd.timeSelection() or 0 end
-      setRenderStartAt(startAt)
-    end
+    u.dawStart, u.dawStartFor = startPos, info.path
+    -- A render is a new file even though it lands under the SAME name as the
+    -- last one: the name is cueport_render_<production>, the same every time.
+    -- UI.uploadSent compares names, so the latch from the previous upload has
+    -- to go here, or the fresh render reads as "already sent", the button stays
+    -- dead and the page keeps saying "Sent" about a file that never left --
+    -- which is what rendering and uploading twice in a row ran into.
+    u.sentFile, u.sentVersion, u.sentNotified = nil, nil, nil
     UI.uploadUseFile(info.path)
     -- Read here rather than at send time: the strip over the result card is
     -- what makes this state worth stopping in, and reading it blocks -- doing
@@ -9356,6 +9538,9 @@ function UI.uploadPump()
     title = p.title, notify = u.notify, keepRender = u.keepRender,
     duration = info.length,
     waveform = u.peaks,
+    -- Only for the render made here: a file chosen from disk could begin
+    -- anywhere, and a guessed start would place its comments wrong for good.
+    dawStart = (u.dawStartFor and u.dawStartFor == u.file) and u.dawStart or nil,
   })
   u.status = nil
 end
@@ -9388,7 +9573,7 @@ function UI.renderSummary()
     if k == u.source then src = K.UP_SRC_LABELS[i] end
   end
   if u.bounds ~= 'timesel' then
-    return 'The whole project, from 0:00 \u{00b7} ' .. src, false
+    return 'The whole project, from the timeline start \u{00b7} ' .. src, false
   end
   local selStart, selLen = Rnd.timeSelection()
   if not selStart then
@@ -9398,7 +9583,6 @@ function UI.renderSummary()
   local line = ('Time selection %s to %s (%s) \u{00b7} %s'):format(
     formatTimestamp(selStart), formatTimestamp(selStart + selLen),
     formatTimestamp(selLen), src)
-  if selStart > 0 and u.setStart then line = line .. ' \u{00b7} 0:00 = render start' end
   return line, false
 end
 
@@ -9707,7 +9891,8 @@ function UI.upload()
   UI.cardGrid('up_render', rowKey, function()
     local segW = math.max(160, math.min(300, ImGui.GetContentRegionAvail(ctx) - 130))
 
-    UI.row('Bounds', 'Whole project starts at 0:00. Time selection renders only ' ..
+    UI.row('Bounds', 'Whole project starts at the very start of the timeline. ' ..
+           'Time selection renders only ' ..
            'what is selected in the timeline. Nothing else about your render ' ..
            'settings is changed, and all of them are put back afterwards.',
            segW, function()
@@ -9724,7 +9909,7 @@ function UI.upload()
     local selStart, selLen = Rnd.timeSelection()
     local selLine
     if u.bounds ~= 'timesel' then
-      selLine = 'The whole project, from 0:00.'
+      selLine = 'Whole project, from the timeline start.'
     elseif not selStart then
       selLine = 'Nothing is selected in the timeline. This would write no file.'
     else
@@ -9821,28 +10006,9 @@ function UI.upload()
       if hit then u.keepRender = on end
     end, nil, K.TOGGLE_H)
 
-    UI.rowSep()
-    -- It sits here rather than under Bounds on the user's call. It is a change
-    -- to HIS project that outlives the render -- the ruler stays shifted -- so
-    -- it belongs with the other two things that happen to the world rather than
-    -- to the file.
-    --
-    -- And it is always pressable, which it was not: it used to grey itself out
-    -- whenever the render already began at 0:00. That reading was wrong. If the
-    -- ruler is still shifted from an earlier render and this one starts at the
-    -- top of the project, then moving 0:00 to the render start is exactly what
-    -- has to happen -- it puts the ruler BACK. Greyed out, the project kept the
-    -- old offset and every comment on the new version landed askew, which is
-    -- the very thing this row exists to prevent.
-    UI.row('Move 0:00 to the render start',
-           'The file starts where the render does, so without this every ' ..
-           'comment lands that far away from where it was meant -- silently. ' ..
-           'This shifts the whole ruler, not just the marker: a render from the ' ..
-           'top of the project moves it back to zero.',
-           32, function()
-      local hit, on = UI.toggle('##upstart', u.setStart)
-      if hit then u.setStart = on end
-    end, nil, K.TOGGLE_H)
+    -- (Until v1.38 a third row here, "Move 0:00 to the render start", shifted
+    -- the producer's ruler after every render. The start of each version now
+    -- goes up with it and the ruler is left alone -- Markers.origin.)
   end)
   end
 
@@ -9906,27 +10072,14 @@ function UI.upload()
       ImGui.Dummy(ctx, 0, ImGui.GetFrameHeight and ImGui.GetFrameHeight(ctx) or 24)
       return
     end
-    local sentV = (up and up.phase == 'done') and up.version or nil
     if ImGui.Button(ctx, 'Back to the production##upleave', 200, 0) then
+      -- The switch to the new version already happened when the upload
+      -- finished (UI.adoptUpload, from the loop); this only navigates. A
+      -- second call is a no-op, so leaving the page any other way -- the menu,
+      -- closing the window -- lands on the same version.
+      if up then UI.adoptUpload(up) end
       state.upload = nil
       state.screen = 'main'
-      -- Land on the version that was just sent, not on the one that was open
-      -- before it. doSync asks for `state.selectedVersionId`, so without this
-      -- the sync right after an upload fetches the OLD version: its comments,
-      -- its markers and its waveform, while the producer is looking for the
-      -- render he just made. Same route as the switcher, so the A/B reference
-      -- for the previous mix comes down with it.
-      --
-      -- `filename` is what the version list calls it; the upload answer calls
-      -- the same string `name`. The A/B file name and the download URL are
-      -- built from it, so it has to be the one the list would have given.
-      if sentV and sentV.id then
-        UI.switchVersion({ id = sentV.id, filename = sentV.name, label = sentV.label,
-                           version_number = sentV.version_number,
-                           track_type = sentV.track_type })
-      elseif sentV then
-        queueSync()
-      end
     end
   end
 
@@ -10760,6 +10913,9 @@ local function loop()
     if state.upload.frameShown then pcall(Up.step)
     else state.upload.frameShown = true end
   end
+  if state.upload and state.upload.phase == 'done' and not state.upload.adopted then
+    pcall(UI.adoptUpload, state.upload)
+  end
   -- The render, armed by the button and run here so the "Rendering..." frame
   -- gets painted first. It blocks while it runs, which is exactly why it must
   -- not run inside the frame that is being drawn.
@@ -11048,8 +11204,8 @@ r.atexit(function()
   -- So are the comment markers: they belong to the script, not to the project.
   -- Nothing is lost -- the comments themselves stay in the project's
   -- ProjExtState, and the binding check puts the markers back on the next run.
-  -- Deliberately *not* the render start marker: that one is the ruler origin
-  -- the user set by hand, and it is theirs to keep.
+  -- Deliberately *not* the render start marker: it only shows where the
+  -- version begins, and the next run places it again from the same data.
   pcall(Markers.remove)
   -- Die temporaeren curl-Dateien gehoeren diesem Lauf. Der Cover-Job ist
   -- der einzige, der laenger lebt als sein Aufruf: er wird losgeloest
