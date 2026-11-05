@@ -48,17 +48,26 @@ MIT licensed. The full text, the third-party notices and a list of everything th
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="1.38.0" author="CuePort" time="2026-11-04T22:56:07Z">
+      <version name="1.38.1" author="CuePort" time="2026-11-05T07:36:46Z">
         <changelog><![CDATA[
-CuePort Sync 1.38.0
+CuePort Sync 1.38.1
 
 Only one version is listed here, and it is the one that is really on the server. Older builds are not kept, so listing them would offer downloads that cannot be delivered.
 
-WHAT CHANGED
+FIXED IN 1.38.1
+
+A render over Entire project in a project with a =START marker was placed too early.
+REAPER lets you move where an Entire project render begins with a marker named exactly =START (and where it ends with =END). The render then starts at that marker, but 1.38.0 still reported the start of the timeline as the start of the version. Every comment marker and the A/B reference of such a version sat as far too early in your project as the =START marker is from the start of the timeline.
+- The script now reads where the render really begins: the earliest marker named exactly =START, otherwise the start of the timeline. This is the same rule REAPER uses (measured in REAPER 7.84): only a marker, not a region; the name is case sensitive; =start, START or =START with more text after it change nothing.
+- A Time selection render is not affected and still starts at the selection.
+- On the render page, hovering Whole project explains what a =START or =END marker does and which markers count. The line under the switch names the =START marker when there is one.
+- A version that was already uploaded from a project with =START keeps the wrong start. Open it, put the edit cursor on the =START marker, press Clear and then Set to edit cursor in the card Where this version starts.
+
+WHAT CHANGED IN 1.38.0
 
 1. Every version remembers where it begins in your project.
 Until now the script placed every comment marker and the A/B reference from the 0:00 of your ruler, one number for the whole project. Two versions rendered over different ranges (one over the entire project, one over a time selection) could never both be right, and a render over the entire project put your own 0:00 back to the start of the timeline. Now the start belongs to each version and is stored in CuePort, so everyone working on that production gets it.
-- A render sent from the script brings its start along: the start of the timeline for Entire project, the start of the selection for Time selection.
+- A render sent from the script brings its start along: the start of the timeline for Entire project (or the =START marker, see above), the start of the selection for Time selection.
 - Comment markers, the A/B reference, the render start marker and a click on a comment are all placed from the start of the version that is open.
 - For a version uploaded in the browser, put the edit cursor where its audio begins and press Set to edit cursor once, in the card Where this version starts.
 - A version without a known start is placed from the 0:00 of your ruler, exactly as before, so nothing that worked before moves.
@@ -83,7 +92,7 @@ Before, REAPER's window Finished in ... stayed open after every render from the 
 6. The render start marker is information only.
 It shows where the open version begins and is set only when that start is known. The setting Move 0:00 to the render start and the old Set render start button are gone; their job is done by points 1 and 2.
 
-WHAT WAS FIXED
+WHAT WAS FIXED IN 1.38.0
 
 1. A second render could not be sent.
 Render and send worked once. Rendered again, the page still said Sent and the send button stayed grey, so the second render never left the computer; only restarting the script helped. The page compared file names, and a render always has the same name. A fresh render now clears that, and can be sent as often as you like in a row.

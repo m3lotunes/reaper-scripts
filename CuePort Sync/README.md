@@ -89,7 +89,10 @@ it twice to remove.
 - **Where a version starts** — every version remembers where it begins in your
   project, measured from the start of the timeline and stored in CuePort. A
   render sent from the script brings it along (the timeline start for **Entire
-  project**, the start of the selection for **Time selection**). For a version
+  project**, or a marker named exactly `=START` if the project has one, since
+  REAPER then renders from there; the start of the selection for **Time
+  selection**; hovering **Whole project** on the render page explains the
+  marker). For a version
   uploaded in the browser, put the edit cursor where its audio begins and press
   **Set to edit cursor** once; everyone working on that production gets it.
   Comment markers, the A/B reference and clicks on a comment all go from there.
@@ -593,10 +596,10 @@ luacheck "CuePort Sync/cueport_sync.lua"   # 0 warnings is the baseline
 lua5.4 test/test-ab-lifecycle.lua       # 325 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
 lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unreachable, the startup switch, the window after a restart
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
-lua5.4 test/test-ui-balance.lua         # 4585 assertions: every screen leaves ImGui's stacks clean
+lua5.4 test/test-ui-balance.lua         # 4627 assertions: every screen leaves ImGui's stacks clean
 lua5.4 test/test-narrow.lua             # 52 assertions: nothing is wider than the window
 lua5.4 test/test-update.lua             # 119 assertions: version compare, the three pre-replace checks, both install routes, restart
-lua5.4 test/test-render.lua             # 204 assertions: the render pass, the settings borrowed and put back, the upload page
+lua5.4 test/test-render.lua             # 213 assertions: the render pass, the settings borrowed and put back, the upload page
 lua5.4 test/test-render-probe.lua       # 39 assertions: the render probe reads without changing anything
 lua5.4 test/test-peaks-probe.lua        # 25 assertions: the peaks probe, and that it removes the track it needs
 lua5.4 test/test-probe-enums.lua        # 26 assertions: the enum probe writes nothing at all

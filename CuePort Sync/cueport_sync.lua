@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.38.0
+-- @version 1.38.1
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -88,7 +88,7 @@
 
 local K = {}
 
-K.VERSION            = '1.38.0'
+K.VERSION            = '1.38.1'
 K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
 -- Das Portal (nicht die API): dort erzeugt das eingeloggte Studio den
 -- Pairing-Code, den der Producer hier eintippt.
@@ -1158,6 +1158,19 @@ K.VERSION_KEY        = 'version_id'
 -- Where the open version begins in this project, in seconds from the start of
 -- the timeline (internal 0). '' = not known. See Markers.origin.
 K.VERSION_START_KEY  = 'version_start'
+-- Tooltip on "Whole project" in the render page: what a =START marker does.
+K.TIP_START_MARKER = table.concat({
+  'Renders from the start of the timeline to the end of the project.',
+  '',
+  'A marker named =START moves the start, =END moves the end.',
+  'What counts (same rule as REAPER):',
+  '  - the name is exactly =START (not =start, START or "=START intro")',
+  '  - a marker, not a region',
+  '  - several =START markers: the earliest one counts',
+  '',
+  'The new version begins where the render begins, so comment',
+  'markers and the A/B track line up with your project.',
+}, '\n')
 -- The Reply control, in the top-right corner of a comment. Small enough not to
 -- reach into the text it sits over, since it is only there while the mouse is
 -- on the row.
@@ -3383,6 +3396,27 @@ function Rnd.run(opts)
   return true, info, warns
 end
 
+-- Where an "Entire project" render begins. Not always the start of the
+-- timeline: a marker named exactly "=START" moves it (measured in Reaper 7.84:
+-- with one at 0:05 the file begins at 0:05). Only a marker, not a region; the
+-- name is case-sensitive and must be exactly that ("=start", "START" and
+-- "=START x" change nothing); of two, the earlier counts. Without one, the
+-- start of the timeline (0).
+function Rnd.projectStart()
+  local best, i = nil, 0
+  while true do
+    local rv, isrgn, pos, _, name = r.EnumProjectMarkers3(0, i)
+    if not rv or rv == 0 then break end
+    if not isrgn and name == '=START' and type(pos) == 'number'
+       and (best == nil or pos < best) then
+      best = pos
+    end
+    i = i + 1
+  end
+  if best and best > 0 then return best end
+  return 0
+end
+
 -- Has he actually selected something? Measured, not asked: a dialog that comes
 -- up every time gets clicked away, and the answer is already knowable.
 -- start == end is Reaper's way of saying "nothing selected", and a
@@ -5194,7 +5228,8 @@ function UI.segmentedMinW(labels)
   return math.ceil((widest + K.SEG_PAD * 2) * #labels)
 end
 
-function UI.segmented(id, labels, activeIdx, totalW, disabled)
+-- `tips` (optional): a tooltip per half, shown while that half is hovered.
+function UI.segmented(id, labels, activeIdx, totalW, disabled, tips)
   disabled = disabled or {}
   local h      = 28
   local x, y   = ImGui.GetCursorScreenPos(ctx)
@@ -5223,6 +5258,9 @@ function UI.segmented(id, labels, activeIdx, totalW, disabled)
       picked = i
     end
     local hov = ImGui.IsItemHovered(ctx) and not disabled[i]
+    if hov and tips and tips[i] and ImGui.SetTooltip then
+      ImGui.SetTooltip(ctx, tips[i])
+    end
     if i == activeIdx then
       -- Only the outer corners of the active half are rounded, so the pair
       -- reads as one control rather than two pills.
@@ -9496,11 +9534,13 @@ function UI.uploadPump()
     -- Where the file begins in the project, read off what was rendered: a time
     -- selection starts where it starts, the whole project at the start of the
     -- timeline (measured in Reaper 7.84: whatever the ruler says, "Entire
-    -- project" renders from internal 0). This number goes up with the file
-    -- and is what places the version's comments and its A/B later -- the
-    -- ruler is not touched (Markers.origin).
-    local startPos = 0
-    if u.bounds == 'timesel' then startPos = Rnd.timeSelection() or 0 end
+    -- project" renders from internal 0) -- or at a "=START" marker, which
+    -- moves that start (Rnd.projectStart). This number goes up with the file
+    -- and is what places the version's comments and its A/B later
+    -- (Markers.origin).
+    local startPos
+    if u.bounds == 'timesel' then startPos = Rnd.timeSelection() or 0
+    else startPos = Rnd.projectStart() end
     local ok, info, warns = Rnd.run({
       bounds = u.bounds, source = u.source, expectSec = expect,
       versionKey = state.boundProductionId,
@@ -9891,13 +9931,15 @@ function UI.upload()
   UI.cardGrid('up_render', rowKey, function()
     local segW = math.max(160, math.min(300, ImGui.GetContentRegionAvail(ctx) - 130))
 
-    UI.row('Bounds', 'Whole project starts at the very start of the timeline. ' ..
+    UI.row('Bounds', 'Whole project starts at the very start of the timeline, ' ..
+           'or at a marker named =START. ' ..
            'Time selection renders only ' ..
            'what is selected in the timeline. Nothing else about your render ' ..
            'settings is changed, and all of them are put back afterwards.',
            segW, function()
       local b = UI.segmented('##upbounds', { 'Whole project', 'Time selection' },
-                             u.bounds == 'timesel' and 2 or 1, segW)
+                             u.bounds == 'timesel' and 2 or 1, segW, nil,
+                             { K.TIP_START_MARKER })
       if b == 1 then u.bounds = 'project' elseif b == 2 then u.bounds = 'timesel' end
     end, nil, 28)
 
@@ -9909,7 +9951,10 @@ function UI.upload()
     local selStart, selLen = Rnd.timeSelection()
     local selLine
     if u.bounds ~= 'timesel' then
-      selLine = 'Whole project, from the timeline start.'
+      local ps = Rnd.projectStart()
+      selLine = ps > 0
+        and ('Whole project, from the =START marker at %s.'):format(formatTimestamp(ps))
+        or 'Whole project, from the timeline start.'
     elseif not selStart then
       selLine = 'Nothing is selected in the timeline. This would write no file.'
     else
