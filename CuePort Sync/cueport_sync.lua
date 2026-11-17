@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.38.1
+-- @version 1.39.0
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -88,8 +88,11 @@
 
 local K = {}
 
-K.VERSION            = '1.38.1'
-K.API_URL = 'https://melotunes-upload.m3lotunes.workers.dev'
+K.VERSION            = '1.39.0'
+-- CuePort's own API address. Until v1.38 the script talked to the older
+-- workers.dev address of the same service; that one stays up for copies of the
+-- script that have not updated yet, so nobody is cut off by this change.
+K.API_URL = 'https://api.cueport.app'
 -- Das Portal (nicht die API): dort erzeugt das eingeloggte Studio den
 -- Pairing-Code, den der Producer hier eintippt.
 K.PAIR_URL = 'https://cueport.app/studio/reaper-link.html'
@@ -494,20 +497,96 @@ end
 -- What curl exited with, in words. Only the codes that can really happen to this
 -- script, and only because "exit 35" tells a producer nothing about what to do
 -- next. The number is kept either way: it is the part I can look up.
-local CURL_WHY = {
-  [6]  = 'the host could not be resolved',
+local Net = {}
+Net.WHY = {
+  [6]  = 'the name lookup failed',
   [7]  = 'the connection was refused',
   [18] = 'the transfer ended early',
   [28] = 'it timed out',
-  [35] = 'the TLS handshake failed',
+  [35] = 'the secure connection could not be set up',
   [52] = 'the server answered nothing',
   [55] = 'sending the data failed',
   [56] = 'receiving the answer failed',
   [60] = 'the certificate could not be verified',
 }
+-- Failures of the connection itself, as opposed to an answer we did not like.
+-- These are the ones worth a second try: the same request a moment later
+-- usually goes through (a laptop just back from sleep, Wi-Fi rejoining, a VPN
+-- reconnecting -- the name lookup is the first thing to fail in all of them).
+Net.RETRY = { [6] = true, [7] = true, [18] = true, [28] = true, [35] = true,
+              [52] = true, [55] = true, [56] = true }
+-- The subset where the request certainly never reached the server. Only these
+-- may be repeated for a request that must not happen twice (a reply, finishing
+-- an upload): a timeout halfway through might have been carried out already.
+Net.UNSENT = { [6] = true, [7] = true, [35] = true }
+-- Pauses between the attempts INSIDE one call, in seconds. Short on purpose:
+-- the call blocks, and the window does not redraw while it waits. The upload
+-- waits longer, but between frames (Up.step), where waiting costs nothing.
+K.NET_WAITS = { 1, 2 }
+
 local function curlWhy(exitCode)
-  local why = CURL_WHY[exitCode]
-  return 'no answer (curl ' .. tostring(exitCode) .. (why and (': ' .. why) or '') .. ')'
+  local why = Net.WHY[exitCode]
+  return "can't reach CuePort (curl " .. tostring(exitCode) ..
+         (why and (': ' .. why) or '') .. '). Check the internet connection and try again.'
+end
+
+-- The curl exit code a message carries, or nil if it is not a connection failure.
+function Net.code(err)
+  return tonumber(tostring(err or ''):match('%(curl (%d+)'))
+end
+
+-- Did the request certainly never leave? A timeout only counts when curl says
+-- it was the connect or the name lookup that timed out, not the transfer.
+function Net.unsent(code, out)
+  if Net.UNSENT[code] then return true end
+  if code == 28 and out and (out:find('Connection timed out', 1, true)
+                             or out:find('Resolving timed out', 1, true)) then
+    return true
+  end
+  return false
+end
+
+-- Wait without a timer to wait on. Bounded by the clock standing still, so a
+-- host whose clock never moves (the test stand-in) cannot hang here.
+function Net.pause(sec)
+  local t0 = r.time_precise()
+  local last, still = t0, 0
+  while true do
+    local t = r.time_precise()
+    if t - t0 >= sec then return end
+    if t == last then
+      still = still + 1
+      if still > 100000 then return end
+    else
+      last, still = t, 0
+    end
+  end
+end
+
+-- Run a curl command line, trying again on a connection failure. `idempotent`
+-- says the request may be repeated even when it may have arrived (GET, a PUT of
+-- the same part); otherwise only a request that never left is repeated.
+-- `Net.last` says how the final attempt ended, for callers that decide more
+-- than "error or not" (the upload pauses instead of giving up).
+function Net.exec(cmd, timeoutMs, idempotent)
+  local raw, code, out
+  for attempt = 1, #K.NET_WAITS + 1 do
+    raw = r.ExecProcess(cmd, timeoutMs)
+    code, out = parseExecOutput(raw)
+    local st = tonumber((out or ''):match('__CUEPORT_STATUS__:(%d+)'))
+    if (st and st > 0) or code == 0 then
+      Net.last = { tries = attempt }
+      return raw
+    end
+    local unsent = Net.unsent(code, out)
+    Net.last = { code = code, unsent = unsent, tries = attempt }
+    local again = unsent or (idempotent and Net.RETRY[code])
+    -- A timeout already cost its full wait; one more is the most worth spending.
+    if code == 28 and attempt >= 2 then again = false end
+    if not again or attempt > #K.NET_WAITS then return raw end
+    Net.pause(K.NET_WAITS[attempt])
+  end
+  return raw
 end
 
 -- Perform an HTTP request using a curl config file (avoids shell-escape hell).
@@ -554,7 +633,9 @@ local function httpRequest(method, url, headers, bodyStr, opts)
 
   -- Execute curl
   local curlCmd = curlCfgCmd(cfgPath)
-  local raw = r.ExecProcess(curlCmd, math.floor(maxTime * 1000) + 5000)
+  local idem = opts.idempotent
+  if idem == nil then idem = (method == 'GET' or method == 'PUT') end
+  local raw = Net.exec(curlCmd, math.floor(maxTime * 1000) + 5000, idem)
   local exitCode, curlOut = parseExecOutput(raw)
 
   local body = readFile(respPath) or ''
@@ -1439,6 +1520,14 @@ local function saveCommentsCache(comments, offset)
       text = c.text,
       parent_id = c.parent_id,
       is_studio = c.is_studio,
+      -- 'label' since the label access (the worker sends it with every row):
+      -- without it a label's comment would be drawn as an artist's.
+      author_type = c.author_type,
+      is_guest = c.is_guest,
+      -- Whether this device may delete it (a label's reply only from a device
+      -- an admin paired). Kept with the row so a restart does not offer the
+      -- cross again until the next sync.
+      can_delete = c.can_delete,
       created_at = c.created_at,
     }
   end
@@ -2465,6 +2554,9 @@ local function loadProductions()
     return
   end
   state.productions = list
+  -- The tracks' names, for labels. A hook rather than a call: this file reaches
+  -- UI only further down, and a name it cannot see yet would be a global nil.
+  if state.noteSpurNames then state.noteSpurNames(list) end
   -- Cover art is started one frame later, not here: the list should be on screen
   -- filling itself in, not waiting. The download itself runs detached and the
   -- covers appear as they land -- see Art.startJob. Nothing is fetched twice.
@@ -2660,12 +2752,13 @@ function AB.download(destPath)
   if not writeFile(cfgPath, table.concat(cfg, '\n')) then
     return false, 'Could not write download config'
   end
-  local raw = r.ExecProcess(curlCfgCmd(cfgPath), 305000)
-  local _, out = parseExecOutput(raw)
+  local raw = Net.exec(curlCfgCmd(cfgPath), 305000, true)
+  local code, out = parseExecOutput(raw)
   deleteFile(cfgPath)
   local status = tonumber((out or ''):match('__CUEPORT_STATUS__:(%d+)'))
   if status ~= 200 then
     deleteFile(partPath)
+    if (not status or status == 0) and code ~= 0 then return false, 'Download failed: ' .. curlWhy(code) end
     return false, 'Download failed (HTTP ' .. tostring(status or '?') .. ')'
   end
   local sz = fileSize(partPath)
@@ -3704,6 +3797,10 @@ local Up = {}
 K.UP_PART_SIZE = 8 * 1024 * 1024   -- what the server suggests; it may say otherwise
 K.UP_MAX_TIME  = 600               -- seconds for one part
 K.UP_CHUNK_TMP = 'upload.part'
+-- When the connection drops mid-upload: wait this long (seconds) before each
+-- further try of the SAME step, between frames. About a minute in all -- long
+-- enough for a laptop to rejoin its network after waking up.
+K.UP_RETRY_WAITS = { 3, 8, 15, 30 }
 
 -- Where an upload goes. Reading and commenting always stay on production; this
 -- one route may differ, and only while production cannot serve it at all.
@@ -3733,6 +3830,12 @@ end
 -- status line shows.
 local function upFail(status, body)
   local parsed = json.decode(body or '')
+  -- The one refusal this script can answer better than the server: the server
+  -- has to assume an old script that knows two kinds; this one shows the
+  -- studio's tracks right above the button, so it says where to look.
+  if parsed and parsed.code == 'spur_nicht_im_ablauf' then
+    return 'this production has no such track any more. Pick one of its tracks above.'
+  end
   if parsed and parsed.error then return tostring(parsed.error) end
   return 'HTTP ' .. tostring(status)
 end
@@ -3792,7 +3895,10 @@ end
 -- technical and unique on purpose, this one is read by a person and is also
 -- what a download is called.
 function Up.displayName(title, trackType, versionNumber, ext)
-  local kind = (trackType == 'instrumental') and 'Instrumental' or 'Mix Master'
+  -- The track's own name once UI has set the hook (it lives further down);
+  -- the two old names otherwise.
+  local kind = (Up.kindLabel and Up.kindLabel(trackType))
+    or ((trackType == 'instrumental') and 'Instrumental' or 'Mix Master')
   local base = (title and title ~= '') and title or 'CuePort'
   -- Not `%c`: that class is `iscntrl`, and under a Windows codepage locale that
   -- covers 0x80-0x9F -- which are continuation bytes of perfectly ordinary UTF-8.
@@ -3800,7 +3906,18 @@ function Up.displayName(title, trackType, versionNumber, ext)
   -- letter whose second byte fell in that range had the byte replaced with a
   -- space, breaking the character in half. The range is written out so it means
   -- the same thing everywhere the script runs.
-  base = base:gsub('[\1-\31\127/\\"]', ' '):gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+  -- Everything one of the three systems refuses in a file name goes: / \ : * ?
+  -- " < > | and the control characters.
+  local function file(sx)
+    return (tostring(sx):gsub('[\1-\31\127/\\:%*%?"<>|]', ' '):gsub('%s+', ' ')
+      :gsub('^%s+', ''):gsub('%s+$', ''))
+  end
+  base = file(base)
+  -- The track's name comes from the server now, and the old mix is "Mix /
+  -- Master" there on purpose (the mails have always said so). On screen that
+  -- is what shows; in a file name the slash would be a folder, so it becomes
+  -- "&" -- the way the app names the track today.
+  kind = file(tostring(kind):gsub('%s*/%s*', ' & '))
   return ('%s (%s v%d).%s'):format(base, kind, versionNumber or 1, ext or 'flac')
 end
 
@@ -3829,6 +3946,52 @@ function Up.cancel()
   state.upload = nil
 end
 
+-- A connection failure is not the end of an upload. The step that failed is
+-- tried again after a pause, the parts already sent stay sent, and only after
+-- the last pause does it stop -- paused, not thrown away: `Up.resume` carries on
+-- from the same step. `anyNet` says the step may be repeated even if the
+-- request might have arrived (opening, a part); finishing may not, unless it
+-- certainly never left. Returns true when it took over.
+function Up.netHold(u, step, anyNet)
+  local nl = Net.last
+  if not (nl and nl.code and (nl.unsent or (anyNet and Net.RETRY[nl.code]))) then
+    return false
+  end
+  u.retries = (u.retries or 0) + 1
+  u.resume  = u.phase
+  u.netError = curlWhy(nl.code)
+  local wait = K.UP_RETRY_WAITS[u.retries]
+  if wait then
+    u.phase, u.retryAt = 'wait', r.time_precise() + wait
+  else
+    -- Short on purpose: the card has two lines for it (seen in Reaper, a
+    -- longer one lost its end). Which step it was stays in `u.failedStep`.
+    u.phase, u.resumable, u.failedStep = 'error', true, step
+    u.error = ('no connection to CuePort (curl %d). Check the internet, then ' ..
+               'Try again: nothing is lost.'):format(nl.code)
+  end
+  return true
+end
+
+function Up.canResume()
+  local u = state.upload
+  return u ~= nil and u.phase == 'error' and u.resumable == true
+end
+
+function Up.resume()
+  local u = state.upload
+  if not (u and u.resumable) then return end
+  u.phase, u.resumable, u.error, u.retries = u.resume or 'start', nil, nil, 0
+  u.frameShown = false
+end
+
+-- Leaving an upload behind (a new render, another file). One that only paused
+-- is still open at the other end, so it is closed there first.
+function Up.drop()
+  if Up.canResume() then Up.cancel() end
+  state.upload = nil
+end
+
 -- The line the window shows while a transfer is running, in one place: the
 -- upload page prints it under its buttons and the veil prints it under its
 -- spinner, and two of them would drift.
@@ -3836,6 +3999,11 @@ function Up.progressLine()
   local u = state.upload
   if not u then return nil end
   local total = (u.size or 0) > 0 and math.max(1, math.ceil(u.size / (u.partSize or 1))) or 1
+  if u.phase == 'wait' then
+    local left = math.max(0, math.ceil((u.retryAt or 0) - r.time_precise()))
+    return ('No connection to CuePort. Trying again in %d s  (%d%% sent)')
+      :format(left, math.floor(Up.progress() * 100 + 0.5))
+  end
   return ('Uploading %d%%  (part %d of %d)')
     :format(math.floor(Up.progress() * 100 + 0.5), #(u.parts or {}), total)
 end
@@ -3867,13 +4035,22 @@ function Up.step()
   local u = state.upload
   if not u then return end
 
+  if u.phase == 'wait' then
+    if r.time_precise() >= (u.retryAt or 0) then u.phase = u.resume or 'start' end
+    return
+  end
+
   if u.phase == 'start' then
     local res, err = Up.start(u.productionId, u.trackType,
                               Up.displayName(u.title, u.trackType, 1, u.ext), u.size)
     -- Which of the three steps stopped, not just why. "Stopped: no answer" is
     -- the same sentence whether the upload never opened or died on its last
     -- part, and those are not the same problem.
-    if not res then u.phase, u.error = 'error', 'opening the upload: ' .. tostring(err); return end
+    if not res then
+      if Up.netHold(u, 'Opening the upload', true) then return end
+      u.phase, u.error = 'error', 'opening the upload: ' .. tostring(err); return
+    end
+    u.retries = 0
     u.uploadId = res.upload_id
     u.versionNumber = res.version_number or 1
     if type(res.part_size) == 'number' and res.part_size > 0 then u.partSize = res.part_size end
@@ -3888,10 +4065,12 @@ function Up.step()
     local etag, err = Up.part(u.uploadId, number, chunkPath)
     deleteFile(chunkPath)
     if not etag then
+      if Up.netHold(u, ('Part %d'):format(number), true) then return end
       local total = (u.size or 0) > 0 and math.max(1, math.ceil(u.size / (u.partSize or 1))) or 1
       u.phase, u.error = 'error', ('part %d of %d: '):format(number, total) .. tostring(err)
       Up.abort(u.uploadId); return
     end
+    u.retries = 0
     u.parts[#u.parts+1] = { part_number = number, etag = etag }
     u.sent = (u.sent or 0) + n
     if u.sent >= u.size then u.phase = 'complete' end
@@ -3909,6 +4088,7 @@ function Up.step()
       dawStart = u.dawStart,
     })
     if not res then
+      if Up.netHold(u, 'Finishing the upload', false) then return end
       u.phase, u.error = 'error', 'finishing the upload: ' .. tostring(err)
       Up.abort(u.uploadId); return
     end
@@ -3924,7 +4104,8 @@ end
 
 function Up.busy()
   local u = state.upload
-  return u ~= nil and (u.phase == 'start' or u.phase == 'part' or u.phase == 'complete')
+  return u ~= nil and (u.phase == 'start' or u.phase == 'part' or u.phase == 'complete'
+                       or u.phase == 'wait')
 end
 
 -- `trackType` is what the user pressed in the picker: the production plus which
@@ -4359,8 +4540,22 @@ local CP_COLORS = {
   artist       = 0xFBBF24FF,
   artistStrong = 0xD9A21BFF,  -- resting dot, a shade down like accentStrong
   artistStem   = 0xFBBF2499,  -- resting stem, same alpha as the purple one
-  studioStem   = 0x7B45C899,
+  -- The studio's own comments: the portals' --violet-mid (#8b5cf6), not the
+  -- window's accent -- the same role colour in REAPER as in the studio and the
+  -- artist portal (FB_ROLE_COLOR, founder's decision of 2026-11-12).
+  studioAccent = 0x8B5CF6FF,
+  studioStrong = 0x7950D6FF,
+  studioStem   = 0x8B5CF699,
+  -- A guest's comments (a guest link): the portals' --cyan (#06b6d4).
+  guest        = 0x06B6D4FF,
+  guestStrong  = 0x059EB8FF,
+  guestStem    = 0x06B6D499,
   commentLit   = 0xB088E01E,
+  -- A label's comments: the portals' --blue (#60a5fa on dark, #2563eb on
+  -- light), resting dot a shade down and stem at the alpha of the others.
+  label        = 0x60A5FAFF,
+  labelStrong  = 0x5490DAFF,
+  labelStem    = 0x60A5FA99,
 
   -- Depth. A flat fill reads as a dialog box; a surface needs a light
   -- direction. The wash lifts the top of the window by ~3%, the glow puts a
@@ -4394,7 +4589,267 @@ local CP_COLORS = {
   -- needs to lift off it. At full strength it read as a hard edge under the
   -- picture rather than as depth.
   shadowArt    = 0x00000018,
+
+  -- Until the palettes these were written straight into the calls that use
+  -- them. A colour that is not in this table cannot follow the theme, so every
+  -- one of them has a name now -- and test-ui-balance fails on a new literal.
+  none         = 0x00000000,  -- fully transparent
+  onAccent     = 0xFFFFFFFF,  -- text and knob on an accent surface
+  onAccentDim  = 0xFFFFFF80,
+  frameBg      = 0x2C2C34FF,  -- text inputs
+  frameBgHov   = 0x36363EFF,
+  frameBgAct   = 0x3B3B44FF,
+  scrollBg     = 0x1D1D20FF,
+  scrollGrab   = 0x3A3A3DFF,
+  scrollGrabHov = 0x4A4A4DFF,
+  scrollGrabAct = 0x5A5A5DFF,
+  successBg    = 0x4ADE801C,  -- plaques: fill and ring under coloured text
+  successBr    = 0x4ADE8040,
+  warnBg       = 0xFFA5001C,
+  warnBr       = 0xFFA50040,
+  dangerBg     = 0xFF4F6D1C,
+  dangerBr     = 0xFF4F6D40,
+  neutralBg    = 0xFFFFFF10,
+  neutralBr    = 0xFFFFFF28,
+  veil         = 0x08080EF0,  -- the busy veil and its panel
+  veilPanel    = 0x14161EFF,
+  veilBorder   = 0x33344AFF,
+  veilArcTrack = 0xB088E030,
+  veilBtn      = 0x1E2130FF,
+  veilBtnHot   = 0x2B2E3EFF,
+  veilBtnBorder = 0x44475EFF,
+  playhead     = 0xFFFFFFEE,  -- the play cursor on the waveform
+  seekLine     = 0xFFFFFF55,  -- where a click would move it
 }
+
+-- ── Palettes ──────────────────────────────────────────────────────────────
+--
+-- Two things the user picks: light or dark (or Auto, which follows Reaper's
+-- own theme), and a palette. A palette is not only an accent colour: an accent
+-- alone would leave the glow behind the wordmark, the waveform, the dimmed
+-- states and the faint tint of the surfaces in the old purple (the founder's
+-- objection, and right). So every colour that carries the hue is DERIVED from
+-- the palette's two values, for both modes, and the gradients fit by
+-- construction.
+--
+-- CP_COLORS stays the one table every draw call reads. Switching refills it in
+-- place: base (dark or light), then the palette on top. Purple in dark mode
+-- reproduces the colours above exactly -- the look nobody asked to change.
+UI.THEME_DARK = {}
+for k, v in pairs(CP_COLORS) do UI.THEME_DARK[k] = v end
+
+-- The studio portal's light palette (studio/css/app.css, :root.light), mapped
+-- onto the roles above. Purple-tinted values come from the palette instead.
+UI.THEME_LIGHT = {
+  bg = 0xF2F2F7FF, border = 0xD1D1D6FF, text = 0x1C1C1EFF, textDim = 0x6E6E73FF,
+  hover = 0xE5E5EAFF, active = 0xD8D8DEFF,
+  success = 0x059669FF, warn = 0xB45309FF, danger = 0xDC2626FF,
+  card = 0xFFFFFFFF, cardBorder = 0xD1D1D6FF, rowSep = 0xE5E5EAFF,
+  sectionText = 0x8E8E93FF, hairline = 0xD8D8DEFF, hairlineFade = 0xD8D8DE00,
+  trackOff = 0xC7C7CCFF, knob = 0xFFFFFFFF,
+  waveGlow = 0xF2F2F700, waveWell = 0xF0F0F4FF, waveWellTop = 0xE4E4EAFF,
+  waveWellEdge = 0xD8D8DEFF,
+  brandShadow = 0x00000018,
+  -- The site's light amber: #fbbf24 on white has no contrast to speak of.
+  artist = 0xB45309FF, artistStrong = 0x92400EFF, artistStem = 0xB4530999,
+  label = 0x2563EBFF, labelStrong = 0x1D4ED8FF, labelStem = 0x2563EB99,
+  studioAccent = 0x5B21B6FF, studioStrong = 0x4C1D95FF, studioStem = 0x5B21B699,
+  guest = 0x0891B2FF, guestStrong = 0x0E7490FF, guestStem = 0x0891B299,
+  washTop = 0xFFFFFF60, washNone = 0xFFFFFF00,
+  listBase = 0xEDEDF2FF, listWash = 0xFFFFFF50,
+  shadow = 0x00000016, shadowArt = 0x00000010,
+  frameBg = 0xEBEBF0FF, frameBgHov = 0xE3E3E9FF, frameBgAct = 0xDCDCE3FF,
+  scrollBg = 0xE9E9EEFF, scrollGrab = 0xC7C7CCFF, scrollGrabHov = 0xAEAEB2FF,
+  scrollGrabAct = 0x8E8E93FF,
+  successBg = 0x0596691C, successBr = 0x05966950, warnBg = 0xB453091C,
+  warnBr = 0xB4530950, dangerBg = 0xDC26261C, dangerBr = 0xDC262650,
+  neutralBg = 0x0000000C, neutralBr = 0x00000024,
+  veil = 0xF2F2F7D8, veilPanel = 0xFFFFFFFF, veilBorder = 0xD1D1D6FF,
+  veilBtn = 0xF2F2F7FF, veilBtnHot = 0xE5E5EAFF, veilBtnBorder = 0xC6C6CCFF,
+  playhead = 0x1C1C1EEE, seekLine = 0x1C1C1E55,
+}
+
+-- The studio portal's brand colours, the same nine and the same values
+-- (melotunesmusic-app: src/branding/markenfarben.css, MARKEN_FARBEN_UI in
+-- studio/js/app.js). Each has three shades there: --cpf (buttons), --cpf-tief
+-- (deep) and --cpf-hell (the accent on a dark surface). The portal's rule,
+-- taken over as it is: on dark the accent is the light shade and buttons the
+-- main one; on light the accent is the main shade (the light one has no
+-- contrast on white) and the deep one is the pressed state. CuePort purple is
+-- the portal's own --pur family, light values from its :root.light.
+-- If the studio portal changes a value, change it here too -- the founder's
+-- rule is "the same colours".
+UI.PALETTES = {
+  { id = 'cueport', label = 'CuePort', cpf = 0x7B45C8, tief = 0x5C30A8, hell = 0xB088E0,
+    light = { 0x7C3AED, 0x6D28D9 } },
+  { id = 'blau',    label = 'Blue',     cpf = 0x2563EB, tief = 0x1E40AF, hell = 0x60A5FA },
+  { id = 'petrol',  label = 'Teal',     cpf = 0x0F766E, tief = 0x115E59, hell = 0x2DD4BF },
+  { id = 'gruen',   label = 'Green',    cpf = 0x15803D, tief = 0x166534, hell = 0x4ADE80 },
+  { id = 'orange',  label = 'Orange',   cpf = 0xC2410C, tief = 0x9A3412, hell = 0xFB923C },
+  { id = 'rot',     label = 'Red',      cpf = 0xB91C1C, tief = 0x991B1B, hell = 0xF87171 },
+  { id = 'pink',    label = 'Pink',     cpf = 0xBE185D, tief = 0x9D174D, hell = 0xF472B6 },
+  { id = 'gold',    label = 'Gold',     cpf = 0xA16207, tief = 0x854D0E, hell = 0xFACC15 },
+  { id = 'graphit', label = 'Graphite', cpf = 0x3F3F46, tief = 0x27272A, hell = 0xA1A1AA },
+}
+
+-- (accent, strong) for a palette in a mode, as 0xRRGGBB.
+function UI.paletteShades(p, light)
+  if light then
+    if p.light then return p.light[1], p.light[2] end
+    return p.cpf, p.tief
+  end
+  return p.hell, p.cpf
+end
+
+-- Mix two 0xRRGGBBAA colours channel by channel; `t` = share of `b`.
+function UI.mix(a, b, t)
+  local out = 0
+  for sh = 24, 0, -8 do
+    local ca, cb = (a >> sh) & 0xFF, (b >> sh) & 0xFF
+    out = out | (math.floor(ca + (cb - ca) * t + 0.5) << sh)
+  end
+  return out
+end
+
+-- Reaper's own theme, light or dark: the main background's brightness. Asked
+-- for Auto only, and read at most every two seconds (UI.themeTick).
+function UI.reaperIsLight()
+  if not r.GetThemeColor then return false end
+  local ok, c = pcall(r.GetThemeColor, 'col_main_bg2', 0)
+  if not ok or type(c) ~= 'number' or c < 0 then return false end
+  if r.ColorFromNative then
+    local ok2, rr, gg, bb = pcall(r.ColorFromNative, c)
+    if ok2 and rr then return (0.299 * rr + 0.587 * gg + 0.114 * bb) > 140 end
+  end
+  local rr, gg, bb = c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF
+  return (0.299 * rr + 0.587 * gg + 0.114 * bb) > 140
+end
+
+function UI.paletteById(id)
+  for _, p in ipairs(UI.PALETTES) do if p.id == id then return p end end
+  return UI.PALETTES[1]
+end
+
+-- Refill CP_COLORS for a mode ('dark'/'light') and a palette id.
+function UI.applyTheme(light, paletteId)
+  for k, v in pairs(UI.THEME_DARK) do CP_COLORS[k] = v end
+  if light then for k, v in pairs(UI.THEME_LIGHT) do CP_COLORS[k] = v end end
+  local p = UI.paletteById(paletteId)
+  local acc, strong = UI.paletteShades(p, light)
+  acc, strong = (acc << 8) | 0xFF, (strong << 8) | 0xFF
+  local c = CP_COLORS
+  -- Who spoke keeps its colour whatever the palette: amber for the artist,
+  -- CuePort purple for the studio. The portal keeps its categories violet for
+  -- the same reason ("sie unterscheiden Dinge, sie schmuecken nicht"), and an
+  -- orange or gold palette would otherwise make a studio pin look like an
+  -- artist's.
+  -- (The role colours -- studio, artist, label, guest -- come from the base
+  -- tables above, the portals' values, and are never touched by a palette.)
+  -- A button colour that sits on the card's own brightness cannot say "on":
+  -- graphite on dark is #3f3f46 against a #24242b card (seen against
+  -- production: a switch that was on looked off). Where the contrast is under
+  -- 1.6 the strong shade is lifted towards the palette's light one. Only
+  -- graphite on dark needs it; the portal draws its buttons with a border and a
+  -- gradient, which this window does not have.
+  local function lum(col)
+    local function ch(v) v = v / 255; return v <= 0.03928 and v / 12.92 or ((v + 0.055) / 1.055) ^ 2.4 end
+    return 0.2126 * ch((col >> 24) & 0xFF) + 0.7152 * ch((col >> 16) & 0xFF) + 0.0722 * ch((col >> 8) & 0xFF)
+  end
+  local l1, l2 = lum(strong), lum(c.card)
+  if (math.max(l1, l2) + 0.05) / (math.min(l1, l2) + 0.05) < 1.6 then
+    strong = UI.mix(strong, acc, 0.45) | 0xFF
+  end
+  c.accent, c.accentStrong = acc, strong
+  c.accentMuted  = (strong & 0xFFFFFF00) | 0x55
+  c.commentLit   = (acc & 0xFFFFFF00) | (light and 0x24 or 0x1E)
+  c.brandGlow    = (acc & 0xFFFFFF00) | 0x22
+  c.glow         = (acc & 0xFFFFFF00) | (light and 0x30 or 0x24)
+  c.veilArcTrack = (acc & 0xFFFFFF00) | 0x30
+  if p.id ~= 'cueport' or light then
+    -- The waveform past the cursor: the main shade sunk into the well it sits
+    -- in, so it reads as the same colour, played.
+    c.waveIdle = UI.mix(strong, c.waveWell, light and 0.55 or 0.5) | 0xFF
+  end
+  UI.themeLight, UI.themePalette = light and true or false, p.id
+end
+
+-- ── Keyboard back to Reaper ───────────────────────────────────────────────
+--
+-- Reported by users: after a click in the script Reaper's shortcuts stop
+-- working -- the space bar does not start playback. The window has the
+-- keyboard focus, and an ImGui window keeps every key it gets. So after a
+-- click the focus goes back to Reaper's main window, unless the click was meant
+-- for typing: a text field that is active (reply, search, pairing code), the
+-- mouse still held, or a menu open. It waits two frames after the release, so
+-- a field the click just opened (Reply sets the focus into its box one frame
+-- later) has taken the keyboard first and is left alone.
+--
+-- Needs JS_ReaScriptAPI (JS_Window_SetFocus), already optional for the pill.
+-- Without it the script passes on the one shortcut everybody reaches for, the
+-- space bar (Transport: Play/stop), and only while nothing is being typed.
+K.KEYS_KEY = 'keys_to_reaper'   -- '0' = off; unwritten = on
+function UI.keysWanted() return getGlobalExt(K.KEYS_KEY) ~= '0' end
+
+function UI.keysToReaper()
+  if not UI.keysWanted() then UI._keysWait = nil; return end
+  local focusFlags = ImGui.FocusedFlags_RootAndChildWindows
+                     and ImGui.FocusedFlags_RootAndChildWindows() or 0
+  if not (ImGui.IsWindowFocused and ImGui.IsWindowFocused(ctx, focusFlags)) then
+    UI._keysWait = nil
+    return
+  end
+  local typing = ImGui.IsAnyItemActive and ImGui.IsAnyItemActive(ctx)
+  local held   = ImGui.IsMouseDown and ImGui.IsMouseDown(ctx, 0)
+  local popup  = false
+  if ImGui.IsPopupOpen and ImGui.PopupFlags_AnyPopupId then
+    local pf = ImGui.PopupFlags_AnyPopupId() |
+               (ImGui.PopupFlags_AnyPopupLevel and ImGui.PopupFlags_AnyPopupLevel() or 0)
+    popup = ImGui.IsPopupOpen(ctx, '', pf)
+  end
+  if not (r.APIExists('JS_Window_SetFocus') and r.GetMainHwnd) then
+    -- No way to hand the focus over: pass the space bar on ourselves.
+    if not typing and not popup and ImGui.Key_Space and ImGui.IsKeyPressed
+       and ImGui.IsKeyPressed(ctx, ImGui.Key_Space(), false) then
+      r.Main_OnCommand(40044, 0)   -- Transport: Play/stop
+    end
+    return
+  end
+  if ImGui.IsMouseReleased and ImGui.IsMouseReleased(ctx, 0) then UI._keysWait = 2 end
+  if not UI._keysWait then return end
+  if typing or popup then UI._keysWait = nil; return end
+  if held then return end
+  UI._keysWait = UI._keysWait - 1
+  if UI._keysWait > 0 then return end
+  UI._keysWait = nil
+  r.JS_Window_SetFocus(r.GetMainHwnd())
+  UI.keysHandedOver = (UI.keysHandedOver or 0) + 1
+end
+
+K.THEME_KEY   = 'theme_mode'     -- 'auto' | 'light' | 'dark'; unwritten = dark
+K.PALETTE_KEY = 'theme_palette'  -- an id from UI.PALETTES; unwritten = cueport
+
+-- What the user chose, as stored. Dark when nothing is stored: an update must
+-- not change how the window looks for anybody who did not ask.
+function UI.themeMode()
+  local m = getGlobalExt(K.THEME_KEY)
+  if m == 'auto' or m == 'light' or m == 'dark' then return m end
+  return 'dark'
+end
+
+-- Once a frame from the loop; cheap. Auto asks Reaper at most every 2 s, so
+-- switching Reaper's theme carries over without a restart.
+function UI.themeTick(force)
+  local now = r.time_precise()
+  if not force and UI._themeAt and now - UI._themeAt < 2 then return end
+  UI._themeAt = now
+  local mode = UI.themeMode()
+  local light = (mode == 'light') or (mode == 'auto' and UI.reaperIsLight())
+  local pal = getGlobalExt(K.PALETTE_KEY)
+  if pal == '' then pal = 'cueport' end
+  if force or light ~= UI.themeLight or pal ~= UI.themePalette then
+    UI.applyTheme(light, pal)
+  end
+end
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- DEPTH — soft texture, shadows, backdrop
@@ -4623,6 +5078,55 @@ function Art.syncFromList()
   return Art.fetchMissing(items)
 end
 
+-- Is this a picture ImGui can decode without throwing? A damaged one is not a
+-- Lua error that pcall could catch: ReaImGui reports it through Reaper's own
+-- error dialog, and the script stopped behind it (seen in Reaper 7.84 with a
+-- cover whose PNG checksum was wrong). So the file is checked first: a PNG
+-- chunk by chunk, every checksum and the end marker; a JPEG by its start and
+-- end markers, which is what a cut-off download loses. Anything else is not
+-- drawn. The cover is a small preview, so reading it once costs nothing.
+function Art.crc32(data, i, j)
+  local t = Art._crcT
+  if not t then
+    t = {}
+    for n = 0, 255 do
+      local c = n
+      for _ = 1, 8 do
+        if c & 1 == 1 then c = 0xEDB88320 ~ (c >> 1) else c = c >> 1 end
+      end
+      t[n] = c
+    end
+    Art._crcT = t
+  end
+  local c = 0xFFFFFFFF
+  for k = i, j do c = t[(c ~ data:byte(k)) & 0xFF] ~ (c >> 8) end
+  return c ~ 0xFFFFFFFF
+end
+
+function Art.decodable(path)
+  local f = io.open(path, 'rb')
+  if not f then return false end
+  local d = f:read('*a') or ''
+  f:close()
+  if d:sub(1, 8) == '\137PNG\r\n\26\n' then
+    local pos = 9
+    while pos + 11 <= #d do
+      local len = string.unpack('>I4', d, pos)
+      local typ = d:sub(pos + 4, pos + 7)
+      local stop = pos + 7 + len
+      if stop + 4 > #d then return false end
+      if Art.crc32(d, pos + 4, stop) ~= string.unpack('>I4', d, stop + 1) then return false end
+      if typ == 'IEND' then return true end
+      pos = stop + 5
+    end
+    return false
+  end
+  if d:sub(1, 2) == '\255\216' then
+    return d:sub(-2) == '\255\217'
+  end
+  return false
+end
+
 -- Images must be cached: creating one per frame leaks memory. `false` marks an
 -- attempt that failed, so a broken file is not retried on every frame -- but a
 -- file that is merely not downloaded yet is NOT marked, or it would never appear.
@@ -4634,6 +5138,7 @@ function Art.image(prodId, tag)
   if cached ~= nil then return cached or nil end
   if not r.APIExists('ImGui_CreateImage') then st.img[ck] = false; return nil end
   if not Art.have(prodId, tag) then return nil end
+  if not Art.decodable(Art.path(prodId, tag)) then st.img[ck] = false; return nil end
   local ok, img = pcall(r.ImGui_CreateImage, Art.path(prodId, tag), 0)
   if ok and img then
     if r.ImGui_Attach then pcall(r.ImGui_Attach, ctx, img) end
@@ -4671,7 +5176,15 @@ function Art.tile(dl, prodId, tag, x, y, size, shadow)
   -- Behind everything else, so the opaque middle of the soft texture is covered
   -- by the tile itself and only the ring around it survives. (In a popup that
   -- order is impossible and the middle shows as a veil -- see UI.shadow.)
-  if shadow then UI.shadow(x, y, x + size, y + size, K.ART_SHADOW, CP_COLORS.shadowArt) end
+  -- Around the tile shrunk by its own radius, and wider by as much: the ring's
+  -- corners are only as round as its spread (10 px) and the tile's are 20, so
+  -- around the full square the shadow stood out past the rounded corners as a
+  -- square of the tile's own grey -- the founder saw it on the placeholder in
+  -- light mode. Inset, the ring's corners are at least as round as the tile's.
+  if shadow then
+    UI.shadow(x + rnd, y + rnd, x + size - rnd, y + size - rnd,
+              K.ART_SHADOW + rnd, CP_COLORS.shadowArt, false, true)
+  end
   local img = Art.image(prodId, tag)
   if img and ImGui.DrawList_AddImage then
     -- Rounded, not square with a rounded outline drawn on top: the artwork is a
@@ -4788,7 +5301,7 @@ end
 -- passes would paint the corners twice and leave a dark blob there. No drop
 -- offset either, because an offset ring leaves a lit gap on one side that no
 -- rectangular clip can fill.
-function UI.shadow(x0, y0, x1, y1, spread, col, outside)
+function UI.shadow(x0, y0, x1, y1, spread, col, outside, under)
   local img = UI.softTex()
   if not (img and ImGui.DrawList_AddImage) then return end
   if not (x0 and y0 and x1 and y1) or x1 <= x0 or y1 <= y0 then return end
@@ -4796,6 +5309,7 @@ function UI.shadow(x0, y0, x1, y1, spread, col, outside)
   local c  = col or CP_COLORS.shadow
   -- Drop, not halo: the whole ring moves down and to the right, so the top-left
   -- edge keeps only a hairline and the weight collects under the card.
+  local ox0, oy0, ox1, oy1 = x0, y0, x1, y1   -- the card itself, before the drop
   if not outside then
     x0, x1 = x0 + K.SHADOW_DX, x1 + K.SHADOW_DX
     y0, y1 = y0 + K.SHADOW_DY, y1 + K.SHADOW_DY
@@ -4844,9 +5358,36 @@ function UI.shadow(x0, y0, x1, y1, spread, col, outside)
   -- rectangle instead of narrowing it, which is the only way to paint outside
   -- the region you are in. Everything is put back straight after: a clip left
   -- on the stack corrupts every later draw.
-  if clipped then ImGui.DrawList_PushClipRect(dl, ax, ay, bx, by, false) end
-  ring()
-  if clipped then ImGui.DrawList_PopClipRect(dl) end
+  --
+  -- And never ON the card. The ring was meant to sit under it (the card is a
+  -- child window, composited later) -- measured in Reaper 7.84 it does not:
+  -- with the shadow switched off a light card reads #ffffff, with it #e9e9e9,
+  -- exactly the shadow's alpha over white; in dark the card read #1e1e24
+  -- instead of its own #24242b, and its text was dimmed by the same amount. So
+  -- the ring is painted in four disjoint bands around the card as it stands
+  -- (before the drop offset), the same way `outside` does for the menu.
+  --
+  -- `under`: the caller paints its shape AFTER this, into the same list (the
+  -- cover tile does), so the ring really is underneath and the whole of it,
+  -- middle included, may be drawn. Cut into bands there, a ROUNDED shape lost
+  -- the shadow in its corners and showed a hard square edge around it (seen by
+  -- the founder on the cover placeholder in light mode).
+  if under or not clipped then
+    if clipped then ImGui.DrawList_PushClipRect(dl, ax, ay, bx, by, false) end
+    ring()
+    if clipped then ImGui.DrawList_PopClipRect(dl) end
+    return
+  end
+  for _, b in ipairs({ { ax, ay, bx, oy0 },        -- above
+                       { ax, oy1, bx, by },        -- below
+                       { ax, oy0, ox0, oy1 },      -- left
+                       { ox1, oy0, bx, oy1 } }) do  -- right
+    if b[3] > b[1] and b[4] > b[2] then
+      ImGui.DrawList_PushClipRect(dl, b[1], b[2], b[3], b[4], false)
+      ring()
+      ImGui.DrawList_PopClipRect(dl)
+    end
+  end
 end
 
 -- Painted right after Begin, so it sits on the window background and under
@@ -4856,6 +5397,72 @@ end
 -- how far down it reaches are arguments, because a card is opaque and hides
 -- the window's own wash, so a card that wants a gradient has to carry its own
 -- and needs a different one (see CP_COLORS.listWash).
+-- The wash as a dithered texture. The plain gradient call has only as many
+-- steps as the wash has alpha -- ten for the window, sixteen for the comment
+-- list -- so on a tall window each step is a band 50 to 100 px high, and the
+-- founder saw them ("siehst du die Abstufungen?"). A smoother curve cannot help:
+-- there are no values between the steps. What helps is dithering: every pixel
+-- rounds its alpha up or down with a fixed noise, so the AVERAGE over a few
+-- pixels follows the straight ramp and the edges of the bands dissolve. The
+-- noise is at most one step of alpha, on a dark surface well under one level of
+-- brightness per pixel.
+--
+-- One texture per strength and height (height rounded up to 16 px, so resizing
+-- a docker does not rebuild it every pixel), 64 px wide and tiled across at
+-- 1:1 -- stretched, the filtering would average the noise away again.
+--
+-- Attached to the context, and detached when the cache is emptied. Unattached,
+-- ReaImGui frees a texture the first frame it is not drawn -- in Reaper 7.84
+-- the comment list skipped one frame while it rebuilt, and the next frame drew
+-- the freed texture: "ImGui_DrawList_AddImage: expected a valid ImGui_Image*",
+-- and the script stopped. A cached handle is also checked before it is used.
+K.WASH_TEX_W = 64
+function UI.washTex(peak, hb)
+  UI._washTex = UI._washTex or { n = 0 }
+  local key = tostring(peak) .. ':' .. tostring(hb)
+  local hit = UI._washTex[key]
+  if hit and r.ImGui_ValidatePtr and not r.ImGui_ValidatePtr(hit, 'ImGui_Image*') then
+    UI._washTex[key], hit = nil, nil
+  end
+  if hit ~= nil then return hit or nil end
+  if UI._washTex.n >= 6 then
+    for k, old in pairs(UI._washTex) do
+      if k ~= 'n' and old and r.ImGui_Detach then pcall(r.ImGui_Detach, ctx, old) end
+    end
+    UI._washTex = { n = 0 }
+  end
+  local W = K.WASH_TEX_W
+  local ok, img = false, nil
+  if r.APIExists('ImGui_CreateImageFromSize') and r.APIExists('ImGui_Image_SetPixels_Array')
+     and r.new_array then
+    ok, img = pcall(r.ImGui_CreateImageFromSize, W, hb)
+  end
+  if not ok or not img then UI._washTex[key] = false; return nil end
+  local buf, i = r.new_array(W * hb), 1
+  for py = 0, hb - 1 do
+    local v = peak * (1 - (py + 0.5) / hb)
+    for px = 0, W - 1 do
+      -- A fixed hash of the position, not math.random: the pattern must not
+      -- change between frames (it would shimmer), and the script must not
+      -- disturb the global random state other scripts may rely on.
+      local n = ((px * 73856093) ~ (py * 19349663)) & 0xFFFFFFFF
+      n = ((n ~ (n >> 13)) * 1274126177) & 0xFFFFFFFF
+      local a = math.floor(v + ((n ~ (n >> 16)) & 0xFFFF) / 65536)
+      if a < 0 then a = 0 elseif a > 255 then a = 255 end
+      buf[i] = 0xFFFFFF00 + a
+      i = i + 1
+    end
+  end
+  if not pcall(r.ImGui_Image_SetPixels_Array, img, 0, 0, W, hb, buf) then
+    UI._washTex[key] = false
+    return nil
+  end
+  if r.ImGui_Attach then pcall(r.ImGui_Attach, ctx, img) end
+  UI._washTex[key] = img
+  UI._washTex.n = UI._washTex.n + 1
+  return img
+end
+
 function UI.wash(colTop, frac)
   if not ImGui.DrawList_AddRectFilledMultiColor then return end
   local x, y = ImGui.GetWindowPos(ctx)
@@ -4871,8 +5478,24 @@ function UI.wash(colTop, frac)
   local rnd = 8
   local top = (ImGui.DrawFlags_RoundCornersTop and ImGui.DrawFlags_RoundCornersTop()) or 0
   ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + rnd, col, rnd, top)
-  ImGui.DrawList_AddRectFilledMultiColor(dl, x, y + rnd, x + w, y + h * (frac or 0.55),
-    col, col, CP_COLORS.washNone, CP_COLORS.washNone)
+  local y0, y1 = y + rnd, y + h * (frac or 0.55)
+  local gh = math.floor(y1 - y0)
+  local img = (gh >= 16 and ImGui.DrawList_AddImage)
+              and UI.washTex(col & 0xFF, math.ceil(gh / 16) * 16) or nil
+  if img then
+    local hb = math.ceil(gh / 16) * 16
+    local W  = K.WASH_TEX_W
+    local tint = (col & 0xFFFFFF00) | 0xFF
+    local tx = x
+    while tx < x + w do
+      local tw = math.min(W, x + w - tx)
+      ImGui.DrawList_AddImage(dl, img, tx, y0, tx + tw, y0 + gh, 0, 0, tw / W, gh / hb, tint)
+      tx = tx + W
+    end
+  else
+    ImGui.DrawList_AddRectFilledMultiColor(dl, x, y0, x + w, y1,
+      col, col, CP_COLORS.washNone, CP_COLORS.washNone)
+  end
   return x, y
 end
 
@@ -5070,7 +5693,7 @@ function UI.tick(size)
   local dl   = ImGui.GetWindowDrawList(ctx)
   local cy   = y + lh / 2
   local col  = CP_COLORS.success
-  ImGui.DrawList_AddCircleFilled(dl, x + d / 2, cy, d / 2, 0x4ADE801C)
+  ImGui.DrawList_AddCircleFilled(dl, x + d / 2, cy, d / 2, CP_COLORS.successBg)
   local t = cy - d / 2
   ImGui.DrawList_AddLine(dl, x + d * 0.28, t + d * 0.52, x + d * 0.44, t + d * 0.70, col, 1.6)
   ImGui.DrawList_AddLine(dl, x + d * 0.44, t + d * 0.70, x + d * 0.74, t + d * 0.32, col, 1.6)
@@ -5116,6 +5739,24 @@ function UI.row(label, hint, controlW, draw, mark, controlH)
   local x0    = ImGui.GetCursorPosX(ctx)
   local yTop  = ImGui.GetCursorPosY(ctx)
   local lh    = UI.lineH()
+  -- Too narrow for label and control side by side (a window docked at the side
+  -- of Reaper, reported with a screenshot): the control goes on a line of its
+  -- own under the label, starting at the left edge, instead of being squeezed
+  -- into what is left beside it -- where a two-way switch read "Whole proje |
+  -- Time selecti" and a button lost the end of its name.
+  if draw and controlW and controlW > 0 then
+    local labelW = ImGui.CalcTextSize(ctx, label) or 0
+    if hint then labelW = labelW + 6 + 15 end
+    if mark then labelW = labelW + 6 + 16 end
+    if labelW + 12 + controlW > (avail or 0) then
+      ImGui.Text(ctx, label)
+      if mark then ImGui.SameLine(ctx, 0, 6); mark() end
+      if hint then ImGui.SameLine(ctx, 0, 6); UI.help('##help_' .. label, hint) end
+      ImGui.SetCursorPosX(ctx, x0)
+      draw()
+      return
+    end
+  end
   local rowH  = math.max(controlH or 0, lh)
   local lift  = (rowH > lh) and math.floor((rowH - lh) / 2 + 0.5) or 0
   local ctlUp = (rowH > (controlH or lh))
@@ -5187,7 +5828,7 @@ function UI.toggle(id, value, dim)
   local kr = (h / 2) - 2
   local kx = on and (x + w - kr - 2) or (x + kr + 2)
   ImGui.DrawList_AddCircleFilled(dl, kx, y + h / 2, kr,
-    on and (dim and 0xFFFFFF80 or 0xFFFFFFFF) or CP_COLORS.knob)
+    on and (dim and CP_COLORS.onAccentDim or CP_COLORS.onAccent) or CP_COLORS.knob)
   return hit, on
 end
 
@@ -5280,7 +5921,7 @@ function UI.segmented(id, labels, activeIdx, totalW, disabled, tips)
     end
     local tw, th = ImGui.CalcTextSize(ctx, label)
     local tcol = CP_COLORS.textDim
-    if i == activeIdx then tcol = 0xFFFFFFFF
+    if i == activeIdx then tcol = CP_COLORS.onAccent
     elseif disabled[i] then tcol = CP_COLORS.sectionText end
     -- Clipped to its own half, always. The width above should make this
     -- unnecessary; it is here because "should" is what the overflowing build
@@ -5318,7 +5959,7 @@ function UI.pillPaint(dl, x, y, w, h, label, active, hovered)
   end
   local tw, th = ImGui.CalcTextSize(ctx, label)
   ImGui.DrawList_AddText(dl, x + (w - tw) / 2, y + (h - th) / 2,
-                         active and 0xFFFFFFFF or CP_COLORS.text, label)
+                         active and CP_COLORS.onAccent or CP_COLORS.text, label)
 end
 
 function UI.pill(id, label, active, w, h)
@@ -5436,7 +6077,7 @@ function UI.primaryButton(label, w)
   ImGui.PushStyleColor(ctx, ImGui.Col_Button(),        CP_COLORS.accentStrong)
   ImGui.PushStyleColor(ctx, ImGui.Col_ButtonHovered(), CP_COLORS.accent)
   ImGui.PushStyleColor(ctx, ImGui.Col_ButtonActive(),  CP_COLORS.accentStrong)
-  ImGui.PushStyleColor(ctx, ImGui.Col_Text(),          0xFFFFFFFF)
+  ImGui.PushStyleColor(ctx, ImGui.Col_Text(),          CP_COLORS.onAccent)
   local hit = ImGui.Button(ctx, label, w or 0, 0)
   ImGui.PopStyleColor(ctx, 4)
   return hit
@@ -5453,6 +6094,16 @@ function UI.para(text, bright)
   if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
   ImGui.PopStyleColor(ctx)
   ImGui.PopFont(ctx)
+end
+
+-- A dim sentence that wraps at the edge of its region instead of running past
+-- it. Plain TextDisabled does not wrap, and in a window docked at the side of
+-- Reaper "A/B compare: press "Sync comments" once to enable it." ran out of the
+-- card (seen in Reaper at ~340 px).
+function UI.textDim(text)
+  if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 0) end
+  ImGui.TextDisabled(ctx, text)
+  if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
 end
 
 -- A list item. The bullet travels inside the string rather than being a widget
@@ -6194,7 +6845,7 @@ function UI.pushTheme()
   pushCol(c_('Text'),               CP_COLORS.text)
   pushCol(c_('TextDisabled'),       CP_COLORS.textDim)
   pushCol(c_('Separator'),          CP_COLORS.border)
-  pushCol(c_('ScrollbarBg'),        0x00000000)
+  pushCol(c_('ScrollbarBg'),        CP_COLORS.none)
   pushCol(c_('ScrollbarGrab'),      CP_COLORS.rowSep)
   pushCol(c_('ScrollbarGrabHovered'), CP_COLORS.hover)
   pushCol(c_('ScrollbarGrabActive'),  CP_COLORS.active)
@@ -6205,23 +6856,23 @@ function UI.pushTheme()
   pushCol(c_('ButtonActive'),       CP_COLORS.accent)
 
   -- Selectables (menu rows)
-  pushCol(c_('Header'),             0x00000000)
+  pushCol(c_('Header'),             CP_COLORS.none)
   pushCol(c_('HeaderHovered'),      CP_COLORS.hover)
   pushCol(c_('HeaderActive'),       CP_COLORS.active)
 
   -- Inputs
-  pushCol(c_('FrameBg'),            0x2C2C34FF)
-  pushCol(c_('FrameBgHovered'),     0x36363EFF)
-  pushCol(c_('FrameBgActive'),      0x3B3B44FF)
+  pushCol(c_('FrameBg'),            CP_COLORS.frameBg)
+  pushCol(c_('FrameBgHovered'),     CP_COLORS.frameBgHov)
+  pushCol(c_('FrameBgActive'),      CP_COLORS.frameBgAct)
 
   -- Checkboxes
   pushCol(c_('CheckMark'),          CP_COLORS.accent)
 
   -- Scrollbars
-  pushCol(c_('ScrollbarBg'),        0x1D1D20FF)
-  pushCol(c_('ScrollbarGrab'),      0x3A3A3DFF)
-  pushCol(c_('ScrollbarGrabHovered'), 0x4A4A4DFF)
-  pushCol(c_('ScrollbarGrabActive'), 0x5A5A5DFF)
+  pushCol(c_('ScrollbarBg'),        CP_COLORS.scrollBg)
+  pushCol(c_('ScrollbarGrab'),      CP_COLORS.scrollGrab)
+  pushCol(c_('ScrollbarGrabHovered'), CP_COLORS.scrollGrabHov)
+  pushCol(c_('ScrollbarGrabActive'), CP_COLORS.scrollGrabAct)
 
   return sc, sv
 end
@@ -6352,6 +7003,17 @@ end
 -- or it belongs to another version) is shown as a thread of its own rather than
 -- dropped -- someone wrote it, and swallowing it would be the same mistake the
 -- artist-only filter made.
+-- Whether a reply gets the delete cross on this device. The worker says so per
+-- comment (`can_delete`) once it lists 'can_delete' in `features`: a label's
+-- reply can only be deleted from a device an admin paired, and offering the
+-- cross on any other device was a control that could only ever say no (seen
+-- in REAPER, 2026-11-16). Without the feature -- an older worker -- every reply
+-- keeps its cross, as before, and the server's answer still decides.
+function UI.mayDelete(c)
+  if not (state.apiFeatures and state.apiFeatures.can_delete) then return true end
+  return not (type(c) == 'table' and c.can_delete == false)
+end
+
 -- The comment column's status line. Every setter goes through here so that
 -- "when was this said" is recorded in one place rather than at six call sites,
 -- and so `hold` is a decision someone made rather than a field someone forgot.
@@ -6403,8 +7065,21 @@ end
 -- `is_studio` at all -- artist is the right guess there, it is who opens a
 -- thread nearly every time.
 function UI.commentTint(c)
+  -- A label's comment: blue, as in the studio portal and the artist portal
+  -- (FB_ROLE_COLOR in studio/js/app.js and src/player/player.js: artist amber,
+  -- studio violet, guest cyan, label blue -- the founder's decision of
+  -- 2026-11-12). Before the studio test, because a label is never the studio.
+  if c and c.author_type == 'label' then
+    return CP_COLORS.label, CP_COLORS.labelStrong, CP_COLORS.labelStem
+  end
+  -- A guest (someone writing through a guest link): cyan, as in the portals.
+  -- Before the studio test for the same reason as the label.
+  if c and (c.author_type == 'guest' or c.is_guest == 1) then
+    return CP_COLORS.guest, CP_COLORS.guestStrong, CP_COLORS.guestStem
+  end
   if c and c.is_studio == 1 then
-    return CP_COLORS.accent, CP_COLORS.accentStrong, CP_COLORS.studioStem
+    return CP_COLORS.studioAccent or CP_COLORS.accent,
+           CP_COLORS.studioStrong or CP_COLORS.accentStrong, CP_COLORS.studioStem
   end
   return CP_COLORS.artist, CP_COLORS.artistStrong, CP_COLORS.artistStem
 end
@@ -6586,6 +7261,28 @@ end
 -- safe inside the auto-resizing body; height 0 ("the rest of the region") is
 -- not, because that region grows with the child and the two would feed each
 -- other. A build without the flag gets the fixed maximum.
+-- How tall the list under the card may be so the page ends where the window
+-- ends -- or nil when there is no such room and it should size itself as
+-- before. Reported from a docked window: the list stopped at
+-- K.COMMENTS_BELOW_MAX_H and left the bottom of a tall docker empty.
+--
+-- Worked out from two numbers that do not move with the list: the height of the
+-- body region (`bodyAvailH`, taken from the window, not from the auto-resizing
+-- page) and the height of the page WITHOUT the list (`bodyHeight`, which the
+-- loop already measures with the list taken out, for the window's height
+-- floor). Asking for "the rest of the region" instead would feed back -- the
+-- page grows with the list -- which is what CLAUDE.md warns about.
+function UI.cmtBelowFill()
+  local avail, rest = tonumber(state.bodyAvailH), tonumber(state.bodyHeight)
+  if not avail or not rest or avail <= 0 or rest <= 0 then return nil end
+  -- 8 for the gap above the list (UI.bound), twice the item spacing (5) the
+  -- measurement does not see, and 3 so rounding never tips the body into
+  -- scrolling. With 4 alone Reaper showed a scrollbar for one pixel.
+  local fill = math.floor(avail - rest - 8 - 10 - 3)
+  if fill < K.COMMENTS_BELOW_MIN_H then return nil end
+  return fill
+end
+
 function UI.commentList(w, h, below)
   local comments = loadCommentsCache()
   local threads  = UI.commentThreads(comments)
@@ -6594,7 +7291,12 @@ function UI.commentList(w, h, below)
   -- here and let this frame's rows answer. The strip sees it next frame.
   state.hoverRowCommentId = nil
   local flags = 0
-  if below then
+  local fill = below and UI.cmtBelowFill() or nil
+  if fill then
+    -- Room to spare: exactly as tall as the window leaves, and it scrolls in
+    -- itself past that.
+    h = fill
+  elseif below then
     if ImGui.ChildFlags_AutoResizeY and ImGui.SetNextWindowSizeConstraints then
       flags = ImGui.ChildFlags_AutoResizeY()
       ImGui.SetNextWindowSizeConstraints(ctx, 0, K.COMMENTS_BELOW_MIN_H,
@@ -6620,7 +7322,13 @@ function UI.commentList(w, h, below)
     -- issued. Clipped rather than wrapped -- wrapping would put back exactly
     -- the extra line this is meant to avoid, and the column is 210 px wide.
     local statusNow = UI.statusText()
-    if statusNow then
+    -- A failure is the exception: it stays until the next action because it is
+    -- the only place the reason is written down -- and clipped to the room
+    -- beside the heading, the reason was exactly the part that got cut off
+    -- ("Delete failed: O..."). So a held line goes under the heading, wrapped,
+    -- in the warning colour. Receipts stay beside it and go away on their own.
+    local statusHeld = statusNow and state.replyStatusHold
+    if statusNow and not statusHeld then
       ImGui.SameLine(ctx, 0, 8)
       local sx, sy = ImGui.GetCursorScreenPos(ctx)
       local room   = ImGui.GetContentRegionAvail(ctx) - K.CMT_POS_W - 6
@@ -6635,6 +7343,16 @@ function UI.commentList(w, h, below)
       ImGui.NewLine(ctx)
     end
     UI.commentPosSwitch(hx + hAvail - K.CMT_POS_W, hy - 1, below)
+    if statusHeld then
+      ImGui.Dummy(ctx, 0, 2)
+      ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
+      ImGui.PushStyleColor(ctx, ImGui.Col_Text(), CP_COLORS.danger)
+      if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 0) end
+      ImGui.Text(ctx, statusNow)
+      if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
+      ImGui.PopStyleColor(ctx)
+      ImGui.PopFont(ctx)
+    end
     ImGui.Dummy(ctx, 0, 4)
 
     if #threads == 0 then
@@ -6743,7 +7461,7 @@ function UI.commentList(w, h, below)
         -- was never told to grow into. The head's Reply control has always sat
         -- outside the group for the same reason; this one now does too.
         if rp.c.id ~= nil then
-          repRows[#repRows+1] = { id = tostring(rp.c.id), y = ry }
+          repRows[#repRows+1] = { id = tostring(rp.c.id), y = ry, c = rp.c }
         end
         ImGui.Unindent(ctx, 10)
       end
@@ -6824,6 +7542,7 @@ function UI.commentList(w, h, below)
       -- click halfway through.
       if availR and availR > 0 and not state.delPending then
         for _, rr in ipairs(repRows) do
+         if UI.mayDelete(rr.c) then
           local armed = (state.delArm == rr.id)
           local dw = armed and K.DEL_ARM_W or K.DEL_W
           local dx = x0 + availR - dw
@@ -6854,7 +7573,7 @@ function UI.commentList(w, h, below)
               local qw, qh = ImGui.CalcTextSize(ctx, 'Sure?')
               ImGui.DrawList_AddText(dl, dx + (dw - qw) / 2,
                                      rr.y - 2 + (K.REPLY_H - qh) / 2,
-                                     0xFFFFFFFF, 'Sure?')
+                                     CP_COLORS.onAccent, 'Sure?')
             else
               UI.pillPaint(dl, dx, rr.y - 2, dw, K.REPLY_H, '\u{d7}', false, hovD)
             end
@@ -6873,6 +7592,7 @@ function UI.commentList(w, h, below)
               state.replyStatus = nil
             end
           end
+         end
         end
       end
       if cid and state.replyTo == cid then UI.replyBox(cid) end
@@ -7065,9 +7785,9 @@ function UI.brand()
     ImGui.SetCursorPosX(ctx, math.max(used, winW - rightPad - fixed - gap - badgeW))
     if showBadge then
       if badgeLabel == 'PREVIEW' then
-        UI.badge(badgeLabel, CP_COLORS.warn, 0xFFA5001C, 0xFFA50040)
+        UI.badge(badgeLabel, CP_COLORS.warn, CP_COLORS.warnBg, CP_COLORS.warnBr)
       else
-        UI.badge(badgeLabel, CP_COLORS.success, 0x4ADE801C, 0x4ADE8040)
+        UI.badge(badgeLabel, CP_COLORS.success, CP_COLORS.successBg, CP_COLORS.successBr)
       end
       ImGui.SameLine(ctx, 0, 10)
       atTop()
@@ -7172,6 +7892,64 @@ function UI.settings()
     if uHit then setGlobalExt(K.UPD_CHECK_KEY, uVal and '1' or '0') end
   end)
 
+  -- How the window looks. Its own tile: the two choices belong together, and
+  -- neither changes anything in the project.
+  panel('look', 'Appearance', function()
+    local modes  = { 'Auto', 'Light', 'Dark' }
+    local keys   = { 'auto', 'light', 'dark' }
+    local cur    = UI.themeMode()
+    local curIdx = 3
+    for i, k in ipairs(keys) do if k == cur then curIdx = i end end
+    local modeW  = UI.segmentedMinW(modes)
+    local pick
+    UI.row('Theme', 'Light or dark, like the studio portal. Auto follows Reaper: ' ..
+           'a light Reaper theme gets the light window, a dark one the dark window.',
+           modeW, function() pick = UI.segmented('##thememode', modes, curIdx, modeW) end,
+           nil, 28)
+    if pick and keys[pick] ~= cur then
+      setGlobalExt(K.THEME_KEY, keys[pick])
+      UI.themeTick(true)
+    end
+    UI.rowSep()
+    -- One swatch per palette, the open one ringed. Drawn rather than buttons:
+    -- a coloured square says more about a colour than its name does.
+    -- Nine of them: at 22 px they need 262, more than a narrow docker has, so
+    -- they shrink to fit (never below 14 px, still a clear target).
+    local n, gap = #UI.PALETTES, 6
+    local availP = ImGui.GetContentRegionAvail(ctx) or 300
+    local sw  = math.max(14, math.min(22, math.floor((availP - gap * (n - 1)) / n)))
+    local swW = n * sw + (n - 1) * gap
+    UI.row('Palette', 'The brand colours of the CuePort studio portal, the same nine. ' ..
+           'Buttons, the waveform and the glow take the colour; comments keep ' ..
+           'their own, amber for the artist and purple for the studio, so who ' ..
+           'spoke stays readable.',
+           swW, function()
+      local x, y = ImGui.GetCursorScreenPos(ctx)
+      local dl = ImGui.GetWindowDrawList(ctx)
+      for i, p in ipairs(UI.PALETTES) do
+        local sx = x + (i - 1) * (sw + gap)
+        ImGui.SetCursorScreenPos(ctx, sx, y + 3)
+        local hit = ImGui.InvisibleButton(ctx, '##pal_' .. p.id, sw, sw)
+        local hov = ImGui.IsItemHovered(ctx)
+        if hov and ImGui.SetTooltip then ImGui.SetTooltip(ctx, p.label) end
+        local _, base = UI.paletteShades(p, UI.themeLight)
+        local col  = (base << 8) | 0xFF
+        ImGui.DrawList_AddRectFilled(dl, sx, y + 3, sx + sw, y + 3 + sw, col, 6)
+        if p.id == UI.themePalette then
+          ImGui.DrawList_AddRect(dl, sx - 3, y, sx + sw + 3, y + sw + 6, CP_COLORS.text, 8, 0, 1.5)
+        elseif hov then
+          ImGui.DrawList_AddRect(dl, sx - 3, y, sx + sw + 3, y + sw + 6, CP_COLORS.textDim, 8, 0, 1)
+        end
+        if hit and p.id ~= UI.themePalette then
+          setGlobalExt(K.PALETTE_KEY, p.id)
+          UI.themeTick(true)
+        end
+      end
+      ImGui.SetCursorScreenPos(ctx, x, y)
+      ImGui.Dummy(ctx, swW, sw + 6)
+    end, nil, 28)
+  end)
+
   panel('window', 'Window', function()
     local dockLabel = state.mainDocked and 'Undock window' or 'Dock in Reaper'
     -- The button shrinks with the tile: in two columns a tile is half as wide.
@@ -7190,6 +7968,18 @@ function UI.settings()
         end
       end
     end)
+
+    UI.rowSep()
+
+    local kHit, kVal
+    UI.row('Shortcuts go to Reaper',
+           'After a click in this window the keyboard goes back to Reaper, so ' ..
+           'its shortcuts (space for play/stop and the rest) keep working. Not ' ..
+           'while you type in a field. Without the JS_ReaScriptAPI extension only ' ..
+           'the space bar is passed on.',
+           32, function() kHit, kVal = UI.toggle('##keystoreaper', UI.keysWanted()) end,
+           nil, K.TOGGLE_H)
+    if kHit then setGlobalExt(K.KEYS_KEY, kVal and '1' or '0') end
 
     UI.rowSep()
 
@@ -7293,7 +8083,7 @@ function UI.settings()
       else
         ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
         if ImGui.PushTextWrapPos then ImGui.PushTextWrapPos(ctx, 0) end
-        ImGui.TextDisabled(ctx, 'Attaching to the transport needs the JS_ReaScriptAPI extension.')
+        UI.textDim('Attaching to the transport needs the JS_ReaScriptAPI extension.')
         if ImGui.PopTextWrapPos then ImGui.PopTextWrapPos(ctx) end
         ImGui.PopFont(ctx)
       end
@@ -7465,8 +8255,8 @@ function UI.about()
               'who left them.')
     UI.bullet('Every upload is a version. Nothing overwrites the last take, and ' ..
               'you can switch between them in the player.')
-    UI.bullet('A production runs through six steps, from lyrics to paid, so ' ..
-              'everyone can see where it stands.')
+    UI.bullet('A production runs through the steps the studio set up for it, ' ..
+              'so everyone can see where it stands.')
     UI.bullet('Studio sessions your artists can request and reschedule, with the ' ..
               'whole calendar synced to your own by iCal.')
     UI.bullet('Lyrics both sides edit in the same place, team roles with live ' ..
@@ -7809,7 +8599,7 @@ function UI.busyOverlay()
   if not (w and h and w > 0 and h > 0) then return end
   local dl = (ImGui.GetForegroundDrawList and ImGui.GetForegroundDrawList(ctx))
              or ImGui.GetWindowDrawList(ctx)
-  ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, 0x08080EF0, K.WINDOW_ROUND or 0)
+  ImGui.DrawList_AddRectFilled(dl, x, y, x + w, y + h, CP_COLORS.veil, K.WINDOW_ROUND or 0)
 
   local job = UI.busyJob() or {}
   local label = job.label or 'Working...'
@@ -7828,8 +8618,8 @@ function UI.busyOverlay()
   local px0, px1 = cx - pw / 2, cx + pw / 2
   local py0 = y + h / 2 - ph / 2
   local py1 = py0 + ph
-  ImGui.DrawList_AddRectFilled(dl, px0, py0, px1, py1, 0x14161EFF, 16)
-  ImGui.DrawList_AddRect(dl, px0, py0, px1, py1, 0x33344AFF, 16, 0, 1)
+  ImGui.DrawList_AddRectFilled(dl, px0, py0, px1, py1, CP_COLORS.veilPanel, 16)
+  ImGui.DrawList_AddRect(dl, px0, py0, px1, py1, CP_COLORS.veilBorder, 16, 0, 1)
 
   local cy = py0 + 20 + rad
   if ImGui.DrawList_PathArcTo and ImGui.DrawList_PathStroke then
@@ -7838,7 +8628,7 @@ function UI.busyOverlay()
     -- A faint full ring behind it, so the moving part reads as a part of
     -- something rather than as a stray stroke.
     ImGui.DrawList_PathArcTo(dl, cx, cy, rad, 0, math.pi * 2)
-    ImGui.DrawList_PathStroke(dl, 0xB088E030, 0, 4)
+    ImGui.DrawList_PathStroke(dl, CP_COLORS.veilArcTrack, 0, 4)
     ImGui.DrawList_PathArcTo(dl, cx, cy, rad, a0, a0 + math.pi * 1.35)
     ImGui.DrawList_PathStroke(dl, CP_COLORS.accent, 0, 4)
   else
@@ -7846,7 +8636,7 @@ function UI.busyOverlay()
   end
 
   local ty = cy + rad + 18
-  ImGui.DrawList_AddText(dl, cx - tw / 2, ty, CP_COLORS.text or 0xFFFFFFFF, label)
+  ImGui.DrawList_AddText(dl, cx - tw / 2, ty, CP_COLORS.text, label)
 
   -- A wait with no way out is a trap, and this one locks everything behind it.
   local bx0 = cx - bw2 / 2
@@ -7854,11 +8644,11 @@ function UI.busyOverlay()
   local hot = ImGui.IsMouseHoveringRect
               and ImGui.IsMouseHoveringRect(ctx, bx0, by0, bx0 + bw2, by0 + bh2) or false
   ImGui.DrawList_AddRectFilled(dl, bx0, by0, bx0 + bw2, by0 + bh2,
-                               hot and 0x2B2E3EFF or 0x1E2130FF, 8)
-  ImGui.DrawList_AddRect(dl, bx0, by0, bx0 + bw2, by0 + bh2, 0x44475EFF, 8, 0, 1)
+                               hot and CP_COLORS.veilBtnHot or CP_COLORS.veilBtn, 8)
+  ImGui.DrawList_AddRect(dl, bx0, by0, bx0 + bw2, by0 + bh2, CP_COLORS.veilBtnBorder, 8, 0, 1)
   local cw = ImGui.CalcTextSize(ctx, 'Cancel') or 0
   ImGui.DrawList_AddText(dl, bx0 + (bw2 - cw) / 2, by0 + (bh2 - lh) / 2,
-                         CP_COLORS.text or 0xFFFFFFFF, 'Cancel')
+                         CP_COLORS.text, 'Cancel')
   if hot and ImGui.IsMouseClicked and ImGui.IsMouseClicked(ctx, 0) and job.cancel then
     job.cancel()
   end
@@ -7926,7 +8716,7 @@ function UI.updateCard()
     origin = 'ReaPack is not installed, so this file is updated by replacing it directly.'
   end
   UI.row('This script', origin, UI.badgeWidth(K.VERSION), function()
-    UI.badge(K.VERSION, CP_COLORS.textDim, 0xFFFFFF10, 0xFFFFFF28)
+    UI.badge(K.VERSION, CP_COLORS.textDim, CP_COLORS.neutralBg, CP_COLORS.neutralBr)
   end, nil, UI.badgeHeight())
 
   UI.rowSep()
@@ -8046,11 +8836,11 @@ function UI.deps()
     -- parenthesis after the name, which read as part of the name.
     local mark, col, bg, br
     if d.ok then
-      mark, col, bg, br = 'INSTALLED', CP_COLORS.success, 0x4ADE801C, 0x4ADE8040
+      mark, col, bg, br = 'INSTALLED', CP_COLORS.success, CP_COLORS.successBg, CP_COLORS.successBr
     elseif d.required then
-      mark, col, bg, br = 'REQUIRED',  CP_COLORS.danger,  0xFF4F6D1C, 0xFF4F6D40
+      mark, col, bg, br = 'REQUIRED',  CP_COLORS.danger,  CP_COLORS.dangerBg, CP_COLORS.dangerBr
     else
-      mark, col, bg, br = 'OPTIONAL',  CP_COLORS.warn,    0xFFA5001C, 0xFFA50040
+      mark, col, bg, br = 'OPTIONAL',  CP_COLORS.warn,    CP_COLORS.warnBg, CP_COLORS.warnBr
     end
     UI.row(d.name, nil, UI.badgeWidth(mark),
       function() UI.badge(mark, col, bg, br) end, nil, UI.badgeHeight())
@@ -8356,7 +9146,7 @@ function UI.picker()
                   -- sits on is a question about this screen.
                   -- `x, y`: `a` is the artist name this loop is already inside.
                   table.sort(tt, function(x, y)
-                    return UI.typeRank(x.type) < UI.typeRank(y.type)
+                    return UI.typeRank(x.type, p) < UI.typeRank(y.type, p)
                   end)
                   ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
                   local ws, total = {}, 0
@@ -8432,11 +9222,18 @@ end
 -- mixmaster) and offered no way to any of the others, so checking a note left
 -- on the instrumental meant going to the browser for it.
 function UI.versionTypeLabel(tt)
+  -- The studio's name for it first: the server knows what a track is called,
+  -- and a name made up here would drift from the portals the first time one
+  -- is renamed. English, like the rest of the script.
+  local named = state.spurNames and state.spurNames[tt]
+  if named then return named end
   if tt == 'mixmaster'    then return 'Mix Master' end
   if tt == 'instrumental' then return 'Instrumental' end
   if not tt or tt == ''   then return 'Version' end
   return (tostring(tt):gsub('^%l', string.upper))
 end
+
+Up.kindLabel = UI.versionTypeLabel
 
 function UI.versionLabel(v, long)
   if not v then return 'Version' end
@@ -8554,20 +9351,84 @@ end
 -- the rest are drawn dim and cannot be pressed.
 -- Reading order, left to right, the way the work happens: the instrumental
 -- comes before the mix of it.
+--
+-- Since the studio can set up its own run of steps, the kinds a production has
+-- come from the server: `spuren` on each production of /reaper/productions, the
+-- audio tracks of its run in the studio's order, one of them marked `liefer` --
+-- the track that is handed over. This list is only the fallback for a worker
+-- that does not send it yet (no 'spuren' in `features`): there every production
+-- has these two, and the mix is what is handed over.
 K.VERSION_TYPES = { 'instrumental', 'mixmaster' }
+K.VERSION_LIEFER = 'mixmaster'
+
+-- The production's tracks as the server named them, or nil from an older
+-- worker. An EMPTY list is an answer (a run with no audio track in it) and is
+-- kept as one, not mistaken for "the server did not say".
+function UI.spuren(p)
+  p = p or state.boundProduction
+  local sp = p and p.spuren
+  if type(sp) ~= 'table' then return nil end
+  local out = {}
+  for _, e in ipairs(sp) do
+    if type(e) == 'table' and type(e.key) == 'string' and e.key ~= '' then
+      out[#out+1] = e
+    end
+  end
+  return out
+end
+
+-- The English names of every track the studio's productions use, by key, for
+-- UI.versionTypeLabel. Rebuilt with each list, so a renamed track is renamed
+-- here at the next sync; kept across productions because a version can be of a
+-- track the open production no longer has in its run.
+function UI.noteSpurNames(list)
+  local names = {}
+  for _, p in ipairs(list or {}) do
+    for _, e in ipairs(UI.spuren(p) or {}) do
+      local n = e.name_en
+      if type(n) ~= 'string' or n == '' then n = e.name_de end
+      if type(n) == 'string' and n ~= '' and not names[e.key] then names[e.key] = n end
+    end
+  end
+  state.spurNames = names
+end
+state.noteSpurNames = UI.noteSpurNames
+
+-- The kinds in reading order for one production: the studio's run, or the two
+-- of old.
+function UI.trackOrder(p)
+  local sp = UI.spuren(p)
+  if not sp then return K.VERSION_TYPES end
+  local out = {}
+  for _, e in ipairs(sp) do out[#out+1] = e.key end
+  return out
+end
+
+-- The track a new version goes to when nothing else says: the handed-over one.
+function UI.lieferType(p)
+  local sp = UI.spuren(p)
+  if not sp then return K.VERSION_LIEFER end
+  for _, e in ipairs(sp) do
+    if e.liefer then return e.key end
+  end
+  local last = sp[#sp]
+  return last and last.key or K.VERSION_LIEFER
+end
 
 -- Where a kind sits in that order. Anything the list does not name goes last,
--- in the order it turned up.
-function UI.typeRank(tt)
-  for i, t in ipairs(K.VERSION_TYPES) do
+-- in the order it turned up. `p` is the production the order belongs to (the
+-- picker sorts a row per production); without it, the one that is open.
+function UI.typeRank(tt, p)
+  local order = UI.trackOrder(p)
+  for i, t in ipairs(order) do
     if t == tt then return i end
   end
-  return #K.VERSION_TYPES + 1
+  return #order + 1
 end
 
 function UI.versionTypes(list)
   local types, seen, have = {}, {}, {}
-  for _, tt in ipairs(K.VERSION_TYPES) do
+  for _, tt in ipairs(UI.trackOrder()) do
     types[#types+1] = tt
     seen[tt] = true
   end
@@ -8654,8 +9515,13 @@ function UI.versionRow(trailing, trailingW)
   -- The switcher keeps what it needs; the trailing control gets the rest, and
   -- only if what is left over is still enough for the switcher to read as one.
   local paired, trailX = false, nil
+  -- The switcher's floor is what its labels need, not a fixed 160: with the
+  -- studio's own tracks there can be five of them, and paired on a floor of 160
+  -- they ran on under the button beside them (seen in REAPER, 2026-11-16).
+  -- Then the button takes a line of its own instead.
   if trailing and trailingW then
-    paired, trailX = UI.pairOnRow(availT, 0, 0, trailingW, 160)
+    paired, trailX = UI.pairOnRow(availT, 0, 0, trailingW,
+                                  math.max(160, UI.segmentedMinW(labels)))
   end
   local segW = paired and math.min(360, math.max(160, trailX - 12)) or math.min(360, availT)
   local pick = UI.segmented('##cpvtype', labels, activeIdx, segW, off)
@@ -8763,7 +9629,7 @@ function UI.waveform()
   if #peaks == 0 then
     ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
     ImGui.TextDisabled(ctx, 'No waveform stored for this version yet.')
-    ImGui.TextDisabled(ctx, 'Upload a version in CuePort, then Sync again.')
+    UI.textDim('Upload a version in CuePort, then Sync again.')
     ImGui.PopFont(ctx)
     return
   end
@@ -8889,8 +9755,8 @@ function UI.waveform()
     -- the stroke half a pixel right of cx while the triangle stayed on cx, and
     -- that is exactly what "the arrow is not centred on the cursor" looks like.
     local cx = math.floor(innerX0 + playFrac * innerW + 0.5)
-    ImGui.DrawList_AddRectFilled(dl, cx - 1, y0 + 3, cx + 1, y1 - 3, 0xFFFFFFEE)
-    ImGui.DrawList_AddTriangleFilled(dl, cx - 4, y1 - 3, cx + 4, y1 - 3, cx, y1 - 9, 0xFFFFFFEE)
+    ImGui.DrawList_AddRectFilled(dl, cx - 1, y0 + 3, cx + 1, y1 - 3, CP_COLORS.playhead)
+    ImGui.DrawList_AddTriangleFilled(dl, cx - 4, y1 - 3, cx + 4, y1 - 3, cx, y1 - 9, CP_COLORS.playhead)
   end
 
   -- Click/drag the strip → move the DAW cursor there. While dragging, the
@@ -8923,7 +9789,7 @@ function UI.waveform()
         local pf = state.pendingSeekAt / duration
         if pf >= 0 and pf <= 1 then
           local px = innerX0 + pf * innerW
-          ImGui.DrawList_AddLine(dl, px, y0 + 1, px, y1 - 1, 0xFFFFFF55, 1.5)
+          ImGui.DrawList_AddLine(dl, px, y0 + 1, px, y1 - 1, CP_COLORS.seekLine, 1.5)
         end
       end
     end
@@ -8999,7 +9865,7 @@ function UI.waveform()
     ImGui.PopFont(ctx)
   else
     ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
-    ImGui.TextDisabled(ctx, 'Track length unknown, so the cursor and pins stay hidden. Re-upload the version in CuePort to store it.')
+    UI.textDim('Track length unknown, so the cursor and pins stay hidden. Re-upload the version in CuePort to store it.')
     ImGui.PopFont(ctx)
   end
 end
@@ -9011,7 +9877,7 @@ function UI.abCompare()
   ImGui.Dummy(ctx, 0, 6)
 
   if state.ab.downloading then
-    ImGui.TextDisabled(ctx, 'Loading A/B reference… this can take a few seconds.')
+    UI.textDim('Loading A/B reference… this can take a few seconds.')
     return
   end
 
@@ -9019,7 +9885,7 @@ function UI.abCompare()
                  and state.ab.forVersion == state.versionId
   if not loaded then
     if not state.versionFilename then
-      ImGui.TextDisabled(ctx, 'A/B compare: press "Sync comments" once to enable it.')
+      UI.textDim('A/B compare: press "Sync comments" once to enable it.')
       return
     end
     -- Width from the room there is, never a fixed number: a fixed 200 plus the
@@ -9067,11 +9933,16 @@ function UI.abCompare()
   local remW   = ImGui.CalcTextSize(ctx, 'Remove') + 22
   local availW = ImGui.GetContentRegionAvail(ctx)
   local tailW  = 8 + 15 + 10 + remW
-  local pick   = UI.segmented('##abswitch', { 'Your mix', 'CuePort version' },
-                              onCue and 2 or 1,
-                              math.max(60, math.min(300, availW - tailW)))
+  local labels = { 'Your mix', 'CuePort version' }
+  -- The switch cannot be narrower than its labels; when the "?" and Remove do
+  -- not fit beside it any more they go on a line of their own. Seen against
+  -- production in a docker of ~340 px: Remove was cut down to "R".
+  local oneRow = UI.segmentedMinW(labels) + tailW <= availW
+  local pick   = UI.segmented('##abswitch', labels, onCue and 2 or 1,
+                              oneRow and math.max(60, math.min(300, availW - tailW))
+                                     or math.min(300, availW))
   if pick then AB.applyState(pick == 2) end
-  ImGui.SameLine(ctx, 0, 8)
+  if oneRow then ImGui.SameLine(ctx, 0, 8) end
   local rowY = ImGui.GetCursorPosY(ctx)
   ImGui.SetCursorPosY(ctx, rowY + (ROW_H - 15) / 2)
   UI.help('##help_ab',
@@ -9274,7 +10145,11 @@ function UI.bound()
     -- claims more room for the buttons than it has and the pair runs past the
     -- card edge on a narrow window.
     local labelW = ImGui.CalcTextSize(ctx, 'Version start') + 6 + 15 + (isSet and (6 + 13) or 0)
-    local btnW   = math.max(80, math.min(240, availA - clearW - 8 - labelW - 12))
+    -- Never narrower than its own name: with a floor of 80 the button read "Set to
+  -- edit curs" in a window docked at the side (seen in Reaper at ~340 px). The
+  -- row below goes onto two lines when this no longer fits beside the label.
+  local btnNeed = ImGui.CalcTextSize(ctx, 'Set to edit cursor') + 22
+  local btnW   = math.max(btnNeed, math.min(240, availA - clearW - 8 - labelW - 12))
     -- A known start was measured when the version was rendered here, and is
     -- more exact than any click. "Set to edit cursor" sits where "Set render
     -- start" used to, looks the same, and replaced it without asking: from the
@@ -9379,7 +10254,23 @@ function UI.uploadType()
   if u.trackType then return u.trackType end
   local cur = UI.activeVersion()
   if cur and cur.track_type then return cur.track_type end
-  return 'mixmaster'
+  return UI.lieferType()
+end
+
+-- What a new version may go to: the tracks of the run, plus any kind that
+-- already has versions -- a track the studio has since taken out of the run
+-- still takes new ones (the server accepts either), and hiding it would strand
+-- whoever was working on it.
+function UI.uploadKinds()
+  local kinds, seen = {}, {}
+  for _, tt in ipairs(UI.trackOrder()) do
+    if not seen[tt] then seen[tt] = true; kinds[#kinds+1] = tt end
+  end
+  for _, v in ipairs(state.versions or {}) do
+    local tt = v.track_type
+    if tt and not seen[tt] then seen[tt] = true; kinds[#kinds+1] = tt end
+  end
+  return kinds
 end
 
 -- What the new version will be called, asked of the versions we already know
@@ -9413,7 +10304,7 @@ function UI.uploadPickFile()
   if not ok or not path or path == '' then return end
   local u = UI.uploadDefaults()
   if state.upload and (state.upload.phase == 'done' or state.upload.phase == 'error') then
-    state.upload = nil
+    Up.drop()
   end
   u.dawStart, u.dawStartFor = nil, nil
   UI.uploadUseFile(path)
@@ -9463,7 +10354,7 @@ function UI.uploadStart(mode)
   -- idea of "done" alive at the same time.
   if mode ~= 'send' and state.upload
      and (state.upload.phase == 'done' or state.upload.phase == 'error') then
-    state.upload = nil
+    Up.drop()
   end
 
   if mode == 'render' then
@@ -9878,8 +10769,9 @@ function UI.upload()
     ImGui.Dummy(ctx, 0, 8)
 
     local tt = UI.uploadType()
+    local kinds = UI.uploadKinds()
     local labels, active = {}, 1
-    for i, k in ipairs(K.VERSION_TYPES) do
+    for i, k in ipairs(kinds) do
       labels[i] = UI.versionTypeLabel(k)
       if k == tt then active = i end
     end
@@ -9890,9 +10782,35 @@ function UI.upload()
     -- that is left over rather than for all of it.
     local helpGap, helpD = 8, 15
     local segTop = ImGui.GetCursorPosY(ctx)
-    local pick, _, _, segH = UI.segmented('##upkind', labels, active,
-      math.min(360, ImGui.GetContentRegionAvail(ctx) - helpGap - helpD))
-    if pick and K.VERSION_TYPES[pick] then u.trackType = K.VERSION_TYPES[pick] end
+    local segRoom = ImGui.GetContentRegionAvail(ctx) - helpGap - helpD
+    local pick, segH
+    if UI.segmentedMinW(labels) <= segRoom then
+      local p1, _, _, h4 = UI.segmented('##upkind', labels, active, math.min(360, segRoom))
+      pick, segH = p1, h4
+    else
+      -- The studio's own run can hold five tracks, and in half a page a switch
+      -- of five cut every label short (seen in REAPER, 2026-11-16). Pills that
+      -- wrap read whole at any width; the active one is filled like the
+      -- switch's, and the "?" follows the last of them.
+      ImGui.PushFont(ctx, FONT, K.FONT_SMALL)
+      local used, first = 0, true
+      for i, l in ipairs(labels) do
+        local w = math.max(34, ImGui.CalcTextSize(ctx, l) + 20)
+        if first then
+          used, first = w, false
+        elseif used + 6 + w <= segRoom then
+          ImGui.SameLine(ctx, 0, 6)
+          used = used + 6 + w
+        else
+          used = w
+        end
+        segTop = ImGui.GetCursorPosY(ctx)   -- the "?" sits on the last pill's line
+        if UI.pill('##upkind_' .. kinds[i], l, i == active, w) then pick = i end
+      end
+      ImGui.PopFont(ctx)
+      segH = 22
+    end
+    if pick and kinds[pick] then u.trackType = kinds[pick] end
     ImGui.SameLine(ctx, 0, helpGap)
     -- Centred against the switcher instead of sitting at the top of the line:
     -- the ring is one text line tall and the switcher is 28, and ImGui aligns
@@ -9929,7 +10847,12 @@ function UI.upload()
   local function blockRender(rowKey)
   UI.section('Render')
   UI.cardGrid('up_render', rowKey, function()
-    local segW = math.max(160, math.min(300, ImGui.GetContentRegionAvail(ctx) - 130))
+    -- Never narrower than its own labels: UI.row compares this with the room
+    -- beside the label, and a width the switch cannot keep sent it into that
+    -- room anyway, cut ("Whole proje | Time selecti" in a docked window).
+    local segW = math.max(160, math.min(300, ImGui.GetContentRegionAvail(ctx) - 130),
+                          UI.segmentedMinW({ 'Whole project', 'Time selection' }),
+                          UI.segmentedMinW(K.UP_SRC_LABELS))
 
     UI.row('Bounds', 'Whole project starts at the very start of the timeline, ' ..
            'or at a marker named =START. ' ..
@@ -9976,8 +10899,8 @@ function UI.upload()
     end, nil, 28)
 
     ImGui.Dummy(ctx, 0, 6)
-    UI.slot(1, { 'FLAC 24 bit \u{00b7} stereo \u{00b7} project rate \u{00b7} your own ' ..
-                 'settings are put back afterwards' })
+    UI.slotWrap(2, 'FLAC 24 bit \u{00b7} stereo \u{00b7} project rate \u{00b7} your own ' ..
+                   'settings are put back afterwards')
   end)
   end
 
@@ -10066,7 +10989,9 @@ function UI.upload()
   UI.cardGrid('up_go', rowKey, function()
     -- Two lines about what pressing would do, or what the last press did.
     local line
-    if up and up.phase == 'error' then
+    if up and Up.canResume() then
+      line = 'Paused: ' .. tostring(up.error)
+    elseif up and up.phase == 'error' then
       line = 'Stopped: ' .. tostring(up.error)
     elseif Up.busy() or u.pending then
       -- While the veil is up it carries the progress line and the way out. Two
@@ -10085,11 +11010,15 @@ function UI.upload()
     ImGui.Dummy(ctx, 0, 8)
 
     local availB = ImGui.GetContentRegionAvail(ctx)
-    local canSend = UI.uploadReady()
+    -- A paused upload offers to carry on, under the same button: it is the
+    -- same act, finished, and it does not start over.
+    local resume = Up.canResume()
+    local canSend = resume or UI.uploadReady()
     if not canSend and ImGui.BeginDisabled then ImGui.BeginDisabled(ctx, true) end
-    if UI.primaryButton('Upload as ' .. UI.uploadTargetVersion() .. '##upsend', availB)
-       and canSend then
-      UI.uploadStart('send')
+    local sendLabel = resume and 'Try again##upsend'
+                      or ('Upload as ' .. UI.uploadTargetVersion() .. '##upsend')
+    if UI.primaryButton(sendLabel, availB) and canSend then
+      if resume then Up.resume() else UI.uploadStart('send') end
     end
     if not canSend and ImGui.EndDisabled then ImGui.EndDisabled(ctx) end
 
@@ -10123,7 +11052,7 @@ function UI.upload()
       -- second call is a no-op, so leaving the page any other way -- the menu,
       -- closing the window -- lands on the same version.
       if up then UI.adoptUpload(up) end
-      state.upload = nil
+      Up.drop()
       state.screen = 'main'
     end
   end
@@ -10980,6 +11909,10 @@ local function loop()
 
   ImGui.PushFont(ctx, FONT, K.FONT_SIZE)
 
+  -- Light, dark or Reaper's, and the palette: refills CP_COLORS when either
+  -- changes. Before anything draws, so a frame is never half one theme.
+  UI.themeTick()
+
   -- Hover tooltip is always on and runs even when the main window is hidden —
   -- that way users still get comment info while the GUI is out of the way.
   UI.hoverTip()
@@ -11220,6 +12153,7 @@ local function loop()
       end
       -- Last thing in the window, so it covers everything that was drawn.
       if UI.busy() then UI.busyOverlay() end
+      pcall(UI.keysToReaper)
       ImGui.End(ctx)
     end
     UI.popTheme(sc, sv)

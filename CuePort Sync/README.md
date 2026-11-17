@@ -10,8 +10,8 @@ version the studio has uploaded.
 DAW — artists, productions, versions, files, sessions and feedback. Every
 artist gets their own login and hears new versions there, leaves comments
 pinned to the exact second on the waveform and uploads covers or stems; every
-upload becomes a version, a production runs through six steps from lyrics to
-paid, and Spotify stats pull themselves in daily. The mixing stays in your DAW.
+upload becomes a version, a production runs through the steps the studio set
+up for it, and Spotify stats pull themselves in daily. The mixing stays in your DAW.
 This script is the Reaper end of it: it reads from CuePort, and the only thing
 it ever writes back is a reply you type yourself, or the removal of one you ask
 it twice to remove.
@@ -38,6 +38,12 @@ it twice to remove.
   becomes is written at the top before anything happens — `Love in the Dark →
   Mix Master v4`. Every upload is a **new version**; nothing is ever replaced,
   exactly as in the browser.
+  **A dropped connection does not lose the upload.** If the network goes away
+  halfway (a laptop waking from sleep, Wi-Fi rejoining, a VPN reconnecting), the
+  step that failed waits and tries again on its own for about a minute; the
+  parts already sent stay sent. If the line is still down after that, the upload
+  is paused rather than thrown away, and **Try again** carries on from where it
+  stopped.
   Format, bit depth, sample rate and channel count are fixed at FLAC 24 bit,
   project rate, stereo — that is the file CuePort wants, and the same one the
   studio portal makes out of a WAV. **Your render settings are borrowed, not
@@ -224,6 +230,17 @@ it twice to remove.
   underneath. Your choice is remembered per project — two `.rpp` files bound to
   the same production may well be working on different versions of it.
 
+  **The studio's own tracks.** A studio can set up its own run for a production
+  in CuePort, with tracks such as *Arrangement*, *Mix* and *Master*. The script
+  takes that run from CuePort: the tracks in the studio's order and under its
+  names, in the picker, above the waveform and on the upload page, where a new
+  version goes to the track that is handed over unless you pick another. A
+  track the studio has taken out of the run but that already has versions is
+  still offered. When there are more tracks than fit beside each other, the
+  upload page shows them as pills that wrap instead of a switch. With an older
+  CuePort that does not send the run yet, it is *Instrumental* and *Mix Master*
+  as before.
+
   Switching moves everything with it: the waveform, the loudness figures, the
   comments and the markers on the ruler. A loaded A/B reference is taken down
   and its audio deleted (see below) — the new one is loaded when you press the
@@ -326,6 +343,15 @@ it twice to remove.
   running. The header doubles as the drag handle
   (`ConfigVar_WindowsMoveFromTitleBarOnly` is set to 0 so ImGui allows it).
   Docked, none of this applies: there the docker draws the tab.
+- **Light, dark or Reaper's own** — Settings → Appearance. Light and dark use
+  the studio portal's palettes, and **Auto** follows Reaper: a light Reaper
+  theme gets the light window. Beside it the portal's nine brand colors
+  (CuePort purple, blue, teal, green, orange, red, pink, gold, graphite) with
+  the same values as in the portal. Buttons, the waveform and the glow take the
+  color; comments keep the role colors of the studio and artist portals --
+  amber for the artist, violet for the studio, blue for a label, cyan for a
+  guest -- so who spoke stays readable under any palette. Gradients are dithered, so
+  they do not fall into visible bands on a tall window.
 - **Dockable, resizable** main window — drag it into any Reaper docker (or use
   the button in Settings); the docked position is remembered between sessions.
   While floating it can be made as large as you like, but not smaller than it
@@ -411,6 +437,13 @@ Logging out and quitting are in the menu, not on this screen.
 - **Updates** — whether to ask GitHub once a day for the current version
   number. On by default. It sends nothing but a request for a public file: no
   token, no ids, nothing about you.
+- **Appearance** — Theme (Auto / Light / Dark) and Palette (the studio
+  portal's nine brand colors). Both apply on the spot.
+- **Shortcuts go to Reaper** — on by default. After a click in the window the
+  keyboard goes back to Reaper, so space, undo and every other shortcut keep
+  working; not while you type in a field or a menu is open. Needs the
+  JS_ReaScriptAPI extension; without it only the space bar (play/stop) is
+  passed on.
 - **Window** — one button that flips with the state: **Dock in Reaper** while
   floating, **Undock window** while docked.
 
@@ -506,6 +539,12 @@ keep running the old version until the next time Reaper starts.
   parser and the MIT licence in its header. The version history is not in it:
   it lives in `index.xml`, which is what ReaPack shows.
 - HTTP via `curl` through `reaper.ExecProcess` (cross-platform).
+- A request that fails on the connection itself (name lookup, refused, TLS,
+  connect timeout) is tried up to three times, a second or two apart. A request
+  that must not happen twice (a reply, finishing an upload) is only repeated when
+  curl says it never reached the server. Errors read as a sentence and keep the
+  curl code in brackets: `can't reach CuePort (curl 6: the name lookup failed).
+  Check the internet connection and try again.`
 - UI via ReaImGui. The main window is dockable (its dock id is persisted in
   global `ExtState`); the floating pill and modal dialogs stay non-dockable for
   a tool-like feel.
@@ -593,13 +632,13 @@ script that refuses to publish unless every one of them is green:
 
 ```sh
 luacheck "CuePort Sync/cueport_sync.lua"   # 0 warnings is the baseline
-lua5.4 test/test-ab-lifecycle.lua       # 325 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
+lua5.4 test/test-ab-lifecycle.lua       # 339 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
 lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unreachable, the startup switch, the window after a restart
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
-lua5.4 test/test-ui-balance.lua         # 4627 assertions: every screen leaves ImGui's stacks clean
+lua5.4 test/test-ui-balance.lua         # 4757 assertions: every screen leaves ImGui's stacks clean
 lua5.4 test/test-narrow.lua             # 52 assertions: nothing is wider than the window
 lua5.4 test/test-update.lua             # 119 assertions: version compare, the three pre-replace checks, both install routes, restart
-lua5.4 test/test-render.lua             # 213 assertions: the render pass, the settings borrowed and put back, the upload page
+lua5.4 test/test-render.lua             # 267 assertions: the render pass, the settings borrowed and put back, the upload page, a dropped connection
 lua5.4 test/test-render-probe.lua       # 39 assertions: the render probe reads without changing anything
 lua5.4 test/test-peaks-probe.lua        # 25 assertions: the peaks probe, and that it removes the track it needs
 lua5.4 test/test-probe-enums.lua        # 26 assertions: the enum probe writes nothing at all
