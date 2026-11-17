@@ -52,11 +52,15 @@ MIT licensed. The full text, the third-party notices and a list of everything th
 }</description>
         <link rel="website">https://cueport.app</link>
       </metadata>
-      <version name="1.39.0" author="CuePort" time="2026-11-17T06:41:42Z">
+      <version name="1.39.1" author="CuePort" time="2026-11-17T17:41:21Z">
         <changelog><![CDATA[
-CuePort Sync 1.39.0
+CuePort Sync 1.39.1
 
 Only one version is listed here, and it is the one that is really on the server. Older builds are not kept, so listing them would offer downloads that cannot be delivered.
+
+FIXED IN 1.39.1
+
+In light mode the menu opened as a dark panel. It now follows the theme.
 
 WHAT CHANGED IN 1.39.0
 

@@ -635,7 +635,7 @@ luacheck "CuePort Sync/cueport_sync.lua"   # 0 warnings is the baseline
 lua5.4 test/test-ab-lifecycle.lua       # 339 assertions on the A/B, version, comment, marker, artwork and logout lifecycles
 lua5.4 test/test-visibility.lua         # 25 assertions: never running-but-unreachable, the startup switch, the window after a restart
 lua5.4 test/test-docking.lua            # 48 assertions: dock state, the control, window sizing, no title bar
-lua5.4 test/test-ui-balance.lua         # 4757 assertions: every screen leaves ImGui's stacks clean
+lua5.4 test/test-ui-balance.lua         # 4760 assertions: every screen leaves ImGui's stacks clean
 lua5.4 test/test-narrow.lua             # 52 assertions: nothing is wider than the window
 lua5.4 test/test-update.lua             # 119 assertions: version compare, the three pre-replace checks, both install routes, restart
 lua5.4 test/test-render.lua             # 267 assertions: the render pass, the settings borrowed and put back, the upload page, a dropped connection

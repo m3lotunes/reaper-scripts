@@ -1,5 +1,5 @@
 -- @description CuePort Sync
--- @version 1.39.0
+-- @version 1.39.1
 -- @author CuePort
 -- @website https://cueport.app
 -- @about
@@ -88,7 +88,7 @@
 
 local K = {}
 
-K.VERSION            = '1.39.0'
+K.VERSION            = '1.39.1'
 -- CuePort's own API address. Until v1.38 the script talked to the older
 -- workers.dev address of the same service; that one stays up for copies of the
 -- script that have not updated yet, so nobody is cut off by this change.
@@ -4770,6 +4770,10 @@ function UI.applyTheme(light, paletteId)
     -- in, so it reads as the same colour, played.
     c.waveIdle = UI.mix(strong, c.waveWell, light and 0.55 or 0.5) | 0xFF
   end
+  -- The menu reads its surface and outline from K (one source for the panel
+  -- and the tab joining it to the button). Those were copied from CP_COLORS
+  -- once, at load, so a switch to light left a dark panel under a light window.
+  if K.MENU_BG then K.MENU_BG, K.MENU_BORDER = c.card, c.cardBorder end
   UI.themeLight, UI.themePalette = light and true or false, p.id
 end
 
